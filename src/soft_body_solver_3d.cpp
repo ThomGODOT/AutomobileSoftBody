@@ -13,7 +13,9 @@ SoftBodySolver3D::SoftBodySolver3D() {
 }
 
 SoftBodySolver3D::~SoftBodySolver3D() {
-    clear_body();
+    // Do not call Node methods here: when the extension instance is freed the
+    // Node part of the object may already be destroyed. The std::vector
+    // members release their memory automatically.
 }
 
 void SoftBodySolver3D::_bind_methods() {
@@ -26,6 +28,7 @@ void SoftBodySolver3D::_bind_methods() {
         D_METHOD("apply_impulse", "local_position", "impulse", "radius"),
         &SoftBodySolver3D::apply_impulse
     );
+    ClassDB::bind_method(D_METHOD("reset_to_rest"), &SoftBodySolver3D::reset_to_rest);
 
     ClassDB::bind_method(D_METHOD("set_gravity", "value"), &SoftBodySolver3D::set_gravity);
     ClassDB::bind_method(D_METHOD("get_gravity"), &SoftBodySolver3D::get_gravity);
@@ -41,6 +44,21 @@ void SoftBodySolver3D::_bind_methods() {
         D_METHOD("get_solver_iterations"),
         &SoftBodySolver3D::get_solver_iterations
     );
+
+    ClassDB::bind_method(D_METHOD("set_fixed_step", "value"), &SoftBodySolver3D::set_fixed_step);
+    ClassDB::bind_method(D_METHOD("get_fixed_step"), &SoftBodySolver3D::get_fixed_step);
+
+    ClassDB::bind_method(D_METHOD("set_yield_strain", "value"), &SoftBodySolver3D::set_yield_strain);
+    ClassDB::bind_method(D_METHOD("get_yield_strain"), &SoftBodySolver3D::get_yield_strain);
+
+    ClassDB::bind_method(D_METHOD("set_break_strain", "value"), &SoftBodySolver3D::set_break_strain);
+    ClassDB::bind_method(D_METHOD("get_break_strain"), &SoftBodySolver3D::get_break_strain);
+
+    ClassDB::bind_method(
+        D_METHOD("set_plastic_creep", "value"),
+        &SoftBodySolver3D::set_plastic_creep
+    );
+    ClassDB::bind_method(D_METHOD("get_plastic_creep"), &SoftBodySolver3D::get_plastic_creep);
 
     ClassDB::bind_method(
         D_METHOD("get_node_positions"),
@@ -59,6 +77,36 @@ void SoftBodySolver3D::_bind_methods() {
     );
     ClassDB::bind_method(D_METHOD("get_max_strain"), &SoftBodySolver3D::get_max_strain);
 
+    // Diagnostics.
+    ClassDB::bind_method(D_METHOD("get_total_mass"), &SoftBodySolver3D::get_total_mass);
+    ClassDB::bind_method(D_METHOD("get_center_of_mass"), &SoftBodySolver3D::get_center_of_mass);
+    ClassDB::bind_method(D_METHOD("get_linear_velocity"), &SoftBodySolver3D::get_linear_velocity);
+    ClassDB::bind_method(D_METHOD("get_linear_momentum"), &SoftBodySolver3D::get_linear_momentum);
+    ClassDB::bind_method(
+        D_METHOD("get_angular_momentum"),
+        &SoftBodySolver3D::get_angular_momentum
+    );
+    ClassDB::bind_method(D_METHOD("get_kinetic_energy"), &SoftBodySolver3D::get_kinetic_energy);
+    ClassDB::bind_method(
+        D_METHOD("get_internal_kinetic_energy"),
+        &SoftBodySolver3D::get_internal_kinetic_energy
+    );
+    ClassDB::bind_method(D_METHOD("get_rigid_frame"), &SoftBodySolver3D::get_rigid_frame);
+    ClassDB::bind_method(
+        D_METHOD("get_node_deformations"),
+        &SoftBodySolver3D::get_node_deformations
+    );
+    ClassDB::bind_method(D_METHOD("get_rms_deformation"), &SoftBodySolver3D::get_rms_deformation);
+    ClassDB::bind_method(D_METHOD("get_max_deformation"), &SoftBodySolver3D::get_max_deformation);
+    ClassDB::bind_method(
+        D_METHOD("get_max_strain_post_solve"),
+        &SoftBodySolver3D::get_max_strain_post_solve
+    );
+    ClassDB::bind_method(
+        D_METHOD("get_yielded_beam_count"),
+        &SoftBodySolver3D::get_yielded_beam_count
+    );
+
     ADD_PROPERTY(
         PropertyInfo(Variant::VECTOR3, "gravity"),
         "set_gravity",
@@ -76,13 +124,45 @@ void SoftBodySolver3D::_bind_methods() {
         "set_solver_iterations",
         "get_solver_iterations"
     );
+
+    ADD_PROPERTY(
+        PropertyInfo(Variant::FLOAT, "fixed_step", PROPERTY_HINT_RANGE, "0.004,0.034,0.0001"),
+        "set_fixed_step",
+        "get_fixed_step"
+    );
+
+    ADD_PROPERTY(
+        PropertyInfo(Variant::FLOAT, "yield_strain", PROPERTY_HINT_RANGE, "0.001,10,0.001"),
+        "set_yield_strain",
+        "get_yield_strain"
+    );
+
+    ADD_PROPERTY(
+        PropertyInfo(Variant::FLOAT, "break_strain", PROPERTY_HINT_RANGE, "0.001,10,0.001"),
+        "set_break_strain",
+        "get_break_strain"
+    );
+
+    ADD_PROPERTY(
+        PropertyInfo(Variant::FLOAT, "plastic_creep", PROPERTY_HINT_RANGE, "0,1,0.001"),
+        "set_plastic_creep",
+        "get_plastic_creep"
+    );
 }
 
-void SoftBodySolver3D::clear_body() {
+void SoftBodySolver3D::clear_data() {
     particles.clear();
     beams.clear();
     accumulator = 0.0;
     max_strain = 0.0;
+    broken_beam_count = 0;
+    frame_rotation = Quaternion();
+    diagnostics = Diagnostics();
+    diagnostics_dirty = true;
+}
+
+void SoftBodySolver3D::clear_body() {
+    clear_data();
     set_physics_process(false);
 }
 
@@ -109,6 +189,8 @@ void SoftBodySolver3D::create_box(
         return x + nx * (y + ny * z);
     };
 
+    particles.reserve(static_cast<size_t>(nx) * ny * nz);
+
     for (int32_t z = 0; z < nz; ++z) {
         for (int32_t y = 0; y < ny; ++y) {
             for (int32_t x = 0; x < nx; ++x) {
@@ -125,6 +207,7 @@ void SoftBodySolver3D::create_box(
                 );
 
                 particle.previous_position = particle.position;
+                particle.rest_position = particle.position;
                 particles.push_back(particle);
             }
         }
@@ -149,6 +232,9 @@ void SoftBodySolver3D::create_box(
         );
         beam.initial_rest_length = beam.rest_length;
         beam.stiffness = stiffness;
+        beam.yield_strain = default_yield_strain;
+        beam.break_strain = default_break_strain;
+        beam.plastic_creep = default_plastic_creep;
 
         if (beam.rest_length > real_t(0.0001)) {
             beams.push_back(beam);
@@ -168,9 +254,6 @@ void SoftBodySolver3D::create_box(
                             if (dx == 0 && dy == 0 && dz <= 0) {
                                 continue;
                             }
-                            if (dx == 0 && dy == 0 && dz == 0) {
-                                continue;
-                            }
 
                             const int32_t offset_count =
                                 std::abs(dx) + std::abs(dy) + std::abs(dz);
@@ -185,7 +268,7 @@ void SoftBodySolver3D::create_box(
                     }
                 }
 
-                // Longer bending beams.
+                // Longer span beams (weak; see review notes on bending).
                 add_beam(x, y, z, 2, 0, 0, real_t(0.18));
                 add_beam(x, y, z, 0, 2, 0, real_t(0.18));
                 add_beam(x, y, z, 0, 0, 2, real_t(0.18));
@@ -193,16 +276,19 @@ void SoftBodySolver3D::create_box(
         }
     }
 
+    diagnostics_dirty = true;
     set_physics_process(true);
 }
 
-void SoftBodySolver3D::apply_impulse(
+Vector3 SoftBodySolver3D::apply_impulse(
     const Vector3 &p_local_position,
     const Vector3 &p_impulse,
     real_t p_radius
 ) {
+    Vector3 delivered;
+
     if (p_radius <= real_t(0.0001)) {
-        return;
+        return delivered;
     }
 
     for (Particle &particle : particles) {
@@ -216,7 +302,38 @@ void SoftBodySolver3D::apply_impulse(
 
         particle.previous_position -=
             p_impulse * (weight * particle.inverse_mass * fixed_step);
+
+        // Momentum change = mass * delta-v = (1 / inverse_mass) * (J * w * inverse_mass).
+        // Particles with zero inverse mass do not move and receive nothing.
+        if (particle.inverse_mass > real_t(0.0001)) {
+            delivered += p_impulse * weight;
+        }
     }
+
+    diagnostics_dirty = true;
+    return delivered;
+}
+
+void SoftBodySolver3D::reset_to_rest() {
+    if (particles.empty()) {
+        return;
+    }
+
+    for (Particle &particle : particles) {
+        particle.position = particle.rest_position;
+        particle.previous_position = particle.rest_position;
+    }
+
+    for (Beam &beam : beams) {
+        beam.rest_length = beam.initial_rest_length;
+        beam.broken = false;
+    }
+
+    broken_beam_count = 0;
+    accumulator = 0.0;
+    max_strain = 0.0;
+    frame_rotation = Quaternion();
+    diagnostics_dirty = true;
 }
 
 void SoftBodySolver3D::set_gravity(const Vector3 &value) {
@@ -241,6 +358,50 @@ void SoftBodySolver3D::set_solver_iterations(int32_t value) {
 
 int32_t SoftBodySolver3D::get_solver_iterations() const {
     return solver_iterations;
+}
+
+void SoftBodySolver3D::set_fixed_step(real_t value) {
+    fixed_step = std::clamp(value, real_t(1.0 / 240.0), real_t(1.0 / 30.0));
+}
+
+real_t SoftBodySolver3D::get_fixed_step() const {
+    return fixed_step;
+}
+
+void SoftBodySolver3D::set_yield_strain(real_t value) {
+    default_yield_strain = std::clamp(value, real_t(0.001), real_t(10.0));
+
+    for (Beam &beam : beams) {
+        beam.yield_strain = default_yield_strain;
+    }
+}
+
+real_t SoftBodySolver3D::get_yield_strain() const {
+    return default_yield_strain;
+}
+
+void SoftBodySolver3D::set_break_strain(real_t value) {
+    default_break_strain = std::clamp(value, real_t(0.001), real_t(10.0));
+
+    for (Beam &beam : beams) {
+        beam.break_strain = default_break_strain;
+    }
+}
+
+real_t SoftBodySolver3D::get_break_strain() const {
+    return default_break_strain;
+}
+
+void SoftBodySolver3D::set_plastic_creep(real_t value) {
+    default_plastic_creep = std::clamp(value, real_t(0.0), real_t(1.0));
+
+    for (Beam &beam : beams) {
+        beam.plastic_creep = default_plastic_creep;
+    }
+}
+
+real_t SoftBodySolver3D::get_plastic_creep() const {
+    return default_plastic_creep;
 }
 
 void SoftBodySolver3D::solve_constraints() {
@@ -288,6 +449,7 @@ void SoftBodySolver3D::simulate_step(real_t delta) {
     }
 
     // Plasticity and break checks use the uncorrected frame strain.
+    // (Unchanged in Stage 2a; revisited in Stage 3.)
     for (Beam &beam : beams) {
         if (beam.broken) {
             continue;
@@ -306,6 +468,7 @@ void SoftBodySolver3D::simulate_step(real_t delta) {
 
         if (strain >= beam.break_strain) {
             beam.broken = true;
+            ++broken_beam_count;
             continue;
         }
 
@@ -323,6 +486,7 @@ void SoftBodySolver3D::simulate_step(real_t delta) {
     }
 
     solve_constraints();
+    diagnostics_dirty = true;
 }
 
 void SoftBodySolver3D::_physics_process(double p_delta) {
@@ -334,23 +498,175 @@ void SoftBodySolver3D::_physics_process(double p_delta) {
 
     int32_t steps = 0;
 
-    while (accumulator >= fixed_step && steps < 4) {
+    while (accumulator >= fixed_step && steps < MAX_STEPS_PER_FRAME) {
         simulate_step(fixed_step);
         accumulator -= fixed_step;
         ++steps;
     }
 
     // Discard excess backlog rather than allowing an expensive catch-up spiral.
-    if (steps == 4 && accumulator > fixed_step) {
+    if (steps == MAX_STEPS_PER_FRAME && accumulator > fixed_step) {
         accumulator = fixed_step;
+    }
+}
+
+void SoftBodySolver3D::compute_diagnostics() const {
+    Diagnostics d;
+
+    const real_t epsilon = real_t(0.0001);
+    const real_t inv_dt = real_t(1.0) / fixed_step;
+
+    // Pass 1: mass, centers of mass, momentum. Particles with zero inverse
+    // mass are treated as pinned and excluded.
+    real_t total_mass = 0.0;
+    Vector3 com;
+    Vector3 rest_com;
+    Vector3 momentum;
+
+    for (const Particle &p : particles) {
+        if (p.inverse_mass <= epsilon) {
+            continue;
+        }
+
+        const real_t m = real_t(1.0) / p.inverse_mass;
+        total_mass += m;
+        com += p.position * m;
+        rest_com += p.rest_position * m;
+        momentum += (p.position - p.previous_position) * (inv_dt * m);
+    }
+
+    d.total_mass = total_mass;
+
+    if (total_mass <= epsilon) {
+        diagnostics = d;
+        diagnostics_dirty = false;
+        return;
+    }
+
+    com /= total_mass;
+    rest_com /= total_mass;
+
+    d.center_of_mass = com;
+    d.rest_center_of_mass = rest_com;
+    d.linear_momentum = momentum;
+    d.linear_velocity = momentum / total_mass;
+
+    // Pass 2: angular momentum, kinetic energy and the shape-matching
+    // covariance A = sum(m * (p - c) * (q - c0)^T), stored by columns.
+    Vector3 a_col[3];
+    Vector3 angular;
+    real_t kinetic = 0.0;
+
+    for (const Particle &p : particles) {
+        if (p.inverse_mass <= epsilon) {
+            continue;
+        }
+
+        const real_t m = real_t(1.0) / p.inverse_mass;
+        const Vector3 velocity = (p.position - p.previous_position) * inv_dt;
+        const Vector3 r = p.position - com;
+        const Vector3 q = p.rest_position - rest_com;
+
+        angular += r.cross(velocity) * m;
+        kinetic += real_t(0.5) * m * velocity.length_squared();
+
+        a_col[0] += r * (m * q.x);
+        a_col[1] += r * (m * q.y);
+        a_col[2] += r * (m * q.z);
+    }
+
+    d.angular_momentum = angular;
+    d.kinetic_energy = kinetic;
+    d.internal_kinetic_energy = std::max(
+        real_t(0.0),
+        kinetic - real_t(0.5) * total_mass * d.linear_velocity.length_squared()
+    );
+
+    // Extract the rotation of A iteratively (Mueller et al. 2016), warm
+    // started from the previous result.
+    Quaternion rotation = frame_rotation;
+
+    for (int32_t iteration = 0; iteration < 24; ++iteration) {
+        const Basis r_basis(rotation);
+        const Vector3 r0 = r_basis.get_column(0);
+        const Vector3 r1 = r_basis.get_column(1);
+        const Vector3 r2 = r_basis.get_column(2);
+
+        const Vector3 numerator =
+            r0.cross(a_col[0]) + r1.cross(a_col[1]) + r2.cross(a_col[2]);
+        const real_t denominator =
+            std::abs(r0.dot(a_col[0]) + r1.dot(a_col[1]) + r2.dot(a_col[2])) +
+            real_t(1.0e-9);
+
+        const Vector3 omega = numerator / denominator;
+        const real_t angle = omega.length();
+
+        if (angle < real_t(1.0e-9)) {
+            break;
+        }
+
+        rotation = (Quaternion(omega / angle, angle) * rotation).normalized();
+    }
+
+    frame_rotation = rotation;
+
+    const Basis frame_basis(rotation);
+    d.rigid_frame = Transform3D(frame_basis, com);
+
+    // Deformation relative to the rigid-fit pose, over all particles.
+    real_t sum_squared = 0.0;
+    real_t max_squared = 0.0;
+
+    for (const Particle &p : particles) {
+        const Vector3 expected = com + frame_basis.xform(p.rest_position - rest_com);
+        const real_t squared = (p.position - expected).length_squared();
+
+        sum_squared += squared;
+        max_squared = std::max(max_squared, squared);
+    }
+
+    if (!particles.empty()) {
+        d.rms_deformation = std::sqrt(sum_squared / real_t(particles.size()));
+    }
+    d.max_deformation = std::sqrt(max_squared);
+
+    // Post-solve strain and plastic beam count.
+    for (const Beam &beam : beams) {
+        if (beam.broken || beam.rest_length <= epsilon) {
+            continue;
+        }
+
+        const real_t distance = particles[beam.a].position.distance_to(
+            particles[beam.b].position
+        );
+        const real_t strain = std::abs(distance - beam.rest_length) / beam.rest_length;
+        d.max_strain_post_solve = std::max(d.max_strain_post_solve, strain);
+
+        if (beam.initial_rest_length > epsilon &&
+            std::abs(beam.rest_length / beam.initial_rest_length - real_t(1.0)) >
+                real_t(0.005)) {
+            ++d.yielded_beam_count;
+        }
+    }
+
+    diagnostics = d;
+    diagnostics_dirty = false;
+}
+
+void SoftBodySolver3D::ensure_diagnostics() const {
+    if (diagnostics_dirty) {
+        compute_diagnostics();
     }
 }
 
 PackedVector3Array SoftBodySolver3D::get_node_positions() const {
     PackedVector3Array result;
+    result.resize(static_cast<int64_t>(particles.size()));
 
-    for (const Particle &particle : particles) {
-        result.push_back(particle.position);
+    Vector3 *write = result.ptrw();
+
+    for (size_t i = 0; i < particles.size(); ++i) {
+        write[i] = particles[i].position;
     }
 
     return result;
@@ -359,11 +675,25 @@ PackedVector3Array SoftBodySolver3D::get_node_positions() const {
 PackedInt32Array SoftBodySolver3D::get_beam_indices() const {
     PackedInt32Array result;
 
+    const int64_t active_count =
+        static_cast<int64_t>(beams.size()) - static_cast<int64_t>(broken_beam_count);
+
+    if (active_count <= 0) {
+        return result;
+    }
+
+    result.resize(active_count * 2);
+
+    int32_t *write = result.ptrw();
+    int64_t cursor = 0;
+
     for (const Beam &beam : beams) {
-        if (!beam.broken) {
-            result.push_back(beam.a);
-            result.push_back(beam.b);
+        if (beam.broken) {
+            continue;
         }
+
+        write[cursor++] = beam.a;
+        write[cursor++] = beam.b;
     }
 
     return result;
@@ -378,17 +708,97 @@ int32_t SoftBodySolver3D::get_beam_count() const {
 }
 
 int32_t SoftBodySolver3D::get_broken_beam_count() const {
-    int32_t count = 0;
-
-    for (const Beam &beam : beams) {
-        if (beam.broken) {
-            ++count;
-        }
-    }
-
-    return count;
+    return broken_beam_count;
 }
 
 real_t SoftBodySolver3D::get_max_strain() const {
     return max_strain;
+}
+
+real_t SoftBodySolver3D::get_total_mass() const {
+    ensure_diagnostics();
+    return diagnostics.total_mass;
+}
+
+Vector3 SoftBodySolver3D::get_center_of_mass() const {
+    ensure_diagnostics();
+    return diagnostics.center_of_mass;
+}
+
+Vector3 SoftBodySolver3D::get_linear_velocity() const {
+    ensure_diagnostics();
+    return diagnostics.linear_velocity;
+}
+
+Vector3 SoftBodySolver3D::get_linear_momentum() const {
+    ensure_diagnostics();
+    return diagnostics.linear_momentum;
+}
+
+Vector3 SoftBodySolver3D::get_angular_momentum() const {
+    ensure_diagnostics();
+    return diagnostics.angular_momentum;
+}
+
+real_t SoftBodySolver3D::get_kinetic_energy() const {
+    ensure_diagnostics();
+    return diagnostics.kinetic_energy;
+}
+
+real_t SoftBodySolver3D::get_internal_kinetic_energy() const {
+    ensure_diagnostics();
+    return diagnostics.internal_kinetic_energy;
+}
+
+Transform3D SoftBodySolver3D::get_rigid_frame() const {
+    ensure_diagnostics();
+    return diagnostics.rigid_frame;
+}
+
+PackedVector3Array SoftBodySolver3D::get_node_deformations() const {
+    ensure_diagnostics();
+
+    PackedVector3Array result;
+    result.resize(static_cast<int64_t>(particles.size()));
+
+    Vector3 *write = result.ptrw();
+
+    if (diagnostics.total_mass <= real_t(0.0001)) {
+        for (size_t i = 0; i < particles.size(); ++i) {
+            write[i] = Vector3();
+        }
+        return result;
+    }
+
+    const Basis &frame_basis = diagnostics.rigid_frame.basis;
+    const Vector3 &origin = diagnostics.rigid_frame.origin;
+
+    for (size_t i = 0; i < particles.size(); ++i) {
+        const Particle &p = particles[i];
+        const Vector3 expected =
+            origin + frame_basis.xform(p.rest_position - diagnostics.rest_center_of_mass);
+        write[i] = p.position - expected;
+    }
+
+    return result;
+}
+
+real_t SoftBodySolver3D::get_rms_deformation() const {
+    ensure_diagnostics();
+    return diagnostics.rms_deformation;
+}
+
+real_t SoftBodySolver3D::get_max_deformation() const {
+    ensure_diagnostics();
+    return diagnostics.max_deformation;
+}
+
+real_t SoftBodySolver3D::get_max_strain_post_solve() const {
+    ensure_diagnostics();
+    return diagnostics.max_strain_post_solve;
+}
+
+int32_t SoftBodySolver3D::get_yielded_beam_count() const {
+    ensure_diagnostics();
+    return diagnostics.yielded_beam_count;
 }
