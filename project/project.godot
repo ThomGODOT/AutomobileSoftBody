@@ -1,0 +1,11 @@
+config_version=5
+
+[application]
+
+config/name="Automobile SoftBody Test"
+run/main_scene="res://scenes/softbody_test.tscn"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
