@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/variant.hpp>
 
@@ -19,22 +20,66 @@ SoftBodySolver3D::~SoftBodySolver3D() {
 }
 
 void SoftBodySolver3D::_bind_methods() {
+    // Building.
     ClassDB::bind_method(
         D_METHOD("create_box", "size", "center", "nodes_x", "nodes_y", "nodes_z"),
         &SoftBodySolver3D::create_box
     );
+    ClassDB::bind_method(D_METHOD("clear_structure"), &SoftBodySolver3D::clear_structure);
+    ClassDB::bind_method(
+        D_METHOD("add_node", "position", "mass"),
+        &SoftBodySolver3D::add_node,
+        DEFVAL(1.0)
+    );
+    ClassDB::bind_method(
+        D_METHOD("add_beam", "a", "b", "stiffness_scale"),
+        &SoftBodySolver3D::add_beam,
+        DEFVAL(1.0)
+    );
+    ClassDB::bind_method(
+        D_METHOD("set_beam_scales", "beam_index", "stiffness_scale", "damping_scale",
+                 "yield_scale", "break_scale", "plastic_scale"),
+        &SoftBodySolver3D::set_beam_scales
+    );
+    ClassDB::bind_method(D_METHOD("finish_build"), &SoftBodySolver3D::finish_build);
 
+    // Mass and motion.
+    ClassDB::bind_method(D_METHOD("set_node_mass", "node_index", "mass"), &SoftBodySolver3D::set_node_mass);
+    ClassDB::bind_method(D_METHOD("get_node_mass", "node_index"), &SoftBodySolver3D::get_node_mass);
+    ClassDB::bind_method(D_METHOD("set_total_mass", "mass"), &SoftBodySolver3D::set_total_mass);
+    ClassDB::bind_method(
+        D_METHOD("set_linear_velocity", "velocity"),
+        &SoftBodySolver3D::set_linear_velocity
+    );
     ClassDB::bind_method(
         D_METHOD("apply_impulse", "local_position", "impulse", "radius"),
         &SoftBodySolver3D::apply_impulse
     );
     ClassDB::bind_method(D_METHOD("reset_to_rest"), &SoftBodySolver3D::reset_to_rest);
 
+    // Test wall.
+    ClassDB::bind_method(
+        D_METHOD("set_wall", "enabled", "normal", "offset", "friction"),
+        &SoftBodySolver3D::set_wall,
+        DEFVAL(0.0)
+    );
+    ClassDB::bind_method(D_METHOD("get_wall_force"), &SoftBodySolver3D::get_wall_force);
+    ClassDB::bind_method(D_METHOD("get_wall_peak_force"), &SoftBodySolver3D::get_wall_peak_force);
+    ClassDB::bind_method(D_METHOD("get_wall_impulse"), &SoftBodySolver3D::get_wall_impulse);
+    ClassDB::bind_method(
+        D_METHOD("get_wall_contact_count"),
+        &SoftBodySolver3D::get_wall_contact_count
+    );
+
+    // Settings.
     ClassDB::bind_method(D_METHOD("set_gravity", "value"), &SoftBodySolver3D::set_gravity);
     ClassDB::bind_method(D_METHOD("get_gravity"), &SoftBodySolver3D::get_gravity);
 
-    ClassDB::bind_method(D_METHOD("set_damping", "value"), &SoftBodySolver3D::set_damping);
-    ClassDB::bind_method(D_METHOD("get_damping"), &SoftBodySolver3D::get_damping);
+    ClassDB::bind_method(D_METHOD("set_global_drag", "value"), &SoftBodySolver3D::set_global_drag);
+    ClassDB::bind_method(D_METHOD("get_global_drag"), &SoftBodySolver3D::get_global_drag);
+
+    ClassDB::bind_method(D_METHOD("set_beam_damping", "value"), &SoftBodySolver3D::set_beam_damping);
+    ClassDB::bind_method(D_METHOD("get_beam_damping"), &SoftBodySolver3D::get_beam_damping);
 
     ClassDB::bind_method(
         D_METHOD("set_solver_iterations", "value"),
@@ -45,8 +90,20 @@ void SoftBodySolver3D::_bind_methods() {
         &SoftBodySolver3D::get_solver_iterations
     );
 
+    ClassDB::bind_method(D_METHOD("set_substeps", "value"), &SoftBodySolver3D::set_substeps);
+    ClassDB::bind_method(D_METHOD("get_substeps"), &SoftBodySolver3D::get_substeps);
+
     ClassDB::bind_method(D_METHOD("set_fixed_step", "value"), &SoftBodySolver3D::set_fixed_step);
     ClassDB::bind_method(D_METHOD("get_fixed_step"), &SoftBodySolver3D::get_fixed_step);
+
+    ClassDB::bind_method(D_METHOD("set_max_speed", "value"), &SoftBodySolver3D::set_max_speed);
+    ClassDB::bind_method(D_METHOD("get_max_speed"), &SoftBodySolver3D::get_max_speed);
+
+    ClassDB::bind_method(
+        D_METHOD("set_beam_stiffness", "value"),
+        &SoftBodySolver3D::set_beam_stiffness
+    );
+    ClassDB::bind_method(D_METHOD("get_beam_stiffness"), &SoftBodySolver3D::get_beam_stiffness);
 
     ClassDB::bind_method(D_METHOD("set_yield_strain", "value"), &SoftBodySolver3D::set_yield_strain);
     ClassDB::bind_method(D_METHOD("get_yield_strain"), &SoftBodySolver3D::get_yield_strain);
@@ -54,21 +111,15 @@ void SoftBodySolver3D::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_break_strain", "value"), &SoftBodySolver3D::set_break_strain);
     ClassDB::bind_method(D_METHOD("get_break_strain"), &SoftBodySolver3D::get_break_strain);
 
-    ClassDB::bind_method(
-        D_METHOD("set_plastic_creep", "value"),
-        &SoftBodySolver3D::set_plastic_creep
-    );
-    ClassDB::bind_method(D_METHOD("get_plastic_creep"), &SoftBodySolver3D::get_plastic_creep);
+    ClassDB::bind_method(D_METHOD("set_break_hold", "value"), &SoftBodySolver3D::set_break_hold);
+    ClassDB::bind_method(D_METHOD("get_break_hold"), &SoftBodySolver3D::get_break_hold);
 
-    ClassDB::bind_method(
-        D_METHOD("get_node_positions"),
-        &SoftBodySolver3D::get_node_positions
-    );
-    ClassDB::bind_method(
-        D_METHOD("get_beam_indices"),
-        &SoftBodySolver3D::get_beam_indices
-    );
+    ClassDB::bind_method(D_METHOD("set_plastic_rate", "value"), &SoftBodySolver3D::set_plastic_rate);
+    ClassDB::bind_method(D_METHOD("get_plastic_rate"), &SoftBodySolver3D::get_plastic_rate);
 
+    // Output.
+    ClassDB::bind_method(D_METHOD("get_node_positions"), &SoftBodySolver3D::get_node_positions);
+    ClassDB::bind_method(D_METHOD("get_beam_indices"), &SoftBodySolver3D::get_beam_indices);
     ClassDB::bind_method(D_METHOD("get_node_count"), &SoftBodySolver3D::get_node_count);
     ClassDB::bind_method(D_METHOD("get_beam_count"), &SoftBodySolver3D::get_beam_count);
     ClassDB::bind_method(
@@ -76,10 +127,16 @@ void SoftBodySolver3D::_bind_methods() {
         &SoftBodySolver3D::get_broken_beam_count
     );
     ClassDB::bind_method(D_METHOD("get_max_strain"), &SoftBodySolver3D::get_max_strain);
+    ClassDB::bind_method(D_METHOD("get_fault_count"), &SoftBodySolver3D::get_fault_count);
+    ClassDB::bind_method(D_METHOD("get_step_time_us"), &SoftBodySolver3D::get_step_time_us);
 
     // Diagnostics.
     ClassDB::bind_method(D_METHOD("get_total_mass"), &SoftBodySolver3D::get_total_mass);
     ClassDB::bind_method(D_METHOD("get_center_of_mass"), &SoftBodySolver3D::get_center_of_mass);
+    ClassDB::bind_method(
+        D_METHOD("get_rest_center_of_mass"),
+        &SoftBodySolver3D::get_rest_center_of_mass
+    );
     ClassDB::bind_method(D_METHOD("get_linear_velocity"), &SoftBodySolver3D::get_linear_velocity);
     ClassDB::bind_method(D_METHOD("get_linear_momentum"), &SoftBodySolver3D::get_linear_momentum);
     ClassDB::bind_method(
@@ -91,6 +148,9 @@ void SoftBodySolver3D::_bind_methods() {
         D_METHOD("get_internal_kinetic_energy"),
         &SoftBodySolver3D::get_internal_kinetic_energy
     );
+    ClassDB::bind_method(D_METHOD("get_elastic_energy"), &SoftBodySolver3D::get_elastic_energy);
+    ClassDB::bind_method(D_METHOD("get_plastic_work"), &SoftBodySolver3D::get_plastic_work);
+    ClassDB::bind_method(D_METHOD("get_damper_work"), &SoftBodySolver3D::get_damper_work);
     ClassDB::bind_method(D_METHOD("get_rigid_frame"), &SoftBodySolver3D::get_rigid_frame);
     ClassDB::bind_method(
         D_METHOD("get_node_deformations"),
@@ -107,55 +167,86 @@ void SoftBodySolver3D::_bind_methods() {
         &SoftBodySolver3D::get_yielded_beam_count
     );
 
-    ADD_PROPERTY(
-        PropertyInfo(Variant::VECTOR3, "gravity"),
-        "set_gravity",
-        "get_gravity"
-    );
+    // Properties.
+    ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "gravity"), "set_gravity", "get_gravity");
 
     ADD_PROPERTY(
-        PropertyInfo(Variant::FLOAT, "damping"),
-        "set_damping",
-        "get_damping"
+        PropertyInfo(Variant::FLOAT, "global_drag", PROPERTY_HINT_RANGE, "0,10,0.01"),
+        "set_global_drag",
+        "get_global_drag"
     );
-
     ADD_PROPERTY(
-        PropertyInfo(Variant::INT, "solver_iterations"),
+        PropertyInfo(Variant::FLOAT, "beam_damping", PROPERTY_HINT_RANGE, "0,200,0.5"),
+        "set_beam_damping",
+        "get_beam_damping"
+    );
+    ADD_PROPERTY(
+        PropertyInfo(Variant::INT, "solver_iterations", PROPERTY_HINT_RANGE, "1,8,1"),
         "set_solver_iterations",
         "get_solver_iterations"
     );
-
+    ADD_PROPERTY(
+        PropertyInfo(Variant::INT, "substeps", PROPERTY_HINT_RANGE, "1,32,1"),
+        "set_substeps",
+        "get_substeps"
+    );
     ADD_PROPERTY(
         PropertyInfo(Variant::FLOAT, "fixed_step", PROPERTY_HINT_RANGE, "0.004,0.034,0.0001"),
         "set_fixed_step",
         "get_fixed_step"
     );
-
     ADD_PROPERTY(
-        PropertyInfo(Variant::FLOAT, "yield_strain", PROPERTY_HINT_RANGE, "0.001,10,0.001"),
+        PropertyInfo(Variant::FLOAT, "max_speed", PROPERTY_HINT_RANGE, "1,1000,1"),
+        "set_max_speed",
+        "get_max_speed"
+    );
+    ADD_PROPERTY(
+        PropertyInfo(Variant::FLOAT, "beam_stiffness", PROPERTY_HINT_RANGE, "1000,100000000,1000,exp"),
+        "set_beam_stiffness",
+        "get_beam_stiffness"
+    );
+    ADD_PROPERTY(
+        PropertyInfo(Variant::FLOAT, "yield_strain", PROPERTY_HINT_RANGE, "0.001,1,0.001"),
         "set_yield_strain",
         "get_yield_strain"
     );
-
     ADD_PROPERTY(
-        PropertyInfo(Variant::FLOAT, "break_strain", PROPERTY_HINT_RANGE, "0.001,10,0.001"),
+        PropertyInfo(Variant::FLOAT, "break_strain", PROPERTY_HINT_RANGE, "0.01,10,0.01"),
         "set_break_strain",
         "get_break_strain"
     );
-
     ADD_PROPERTY(
-        PropertyInfo(Variant::FLOAT, "plastic_creep", PROPERTY_HINT_RANGE, "0,1,0.001"),
-        "set_plastic_creep",
-        "get_plastic_creep"
+        PropertyInfo(Variant::FLOAT, "break_hold", PROPERTY_HINT_RANGE, "0,0.1,0.001"),
+        "set_break_hold",
+        "get_break_hold"
+    );
+    ADD_PROPERTY(
+        PropertyInfo(Variant::FLOAT, "plastic_rate", PROPERTY_HINT_RANGE, "0,2000,1"),
+        "set_plastic_rate",
+        "get_plastic_rate"
     );
 }
+
+// ------------------------------------------------------------- Building ----
 
 void SoftBodySolver3D::clear_data() {
     particles.clear();
     beams.clear();
+    good_position.clear();
+    good_velocity.clear();
     accumulator = 0.0;
+    substep_counter = 0;
     max_strain = 0.0;
+    tick_max_strain = 0.0;
     broken_beam_count = 0;
+    fault_count = 0;
+    plastic_work = 0.0;
+    damper_work = 0.0;
+    wall_contacts = 0;
+    tick_wall_impulse = Vector3();
+    wall_force = Vector3();
+    wall_impulse_total = Vector3();
+    wall_peak_force = 0.0;
     frame_rotation = Quaternion();
     diagnostics = Diagnostics();
     diagnostics_dirty = true;
@@ -164,6 +255,97 @@ void SoftBodySolver3D::clear_data() {
 void SoftBodySolver3D::clear_body() {
     clear_data();
     set_physics_process(false);
+}
+
+void SoftBodySolver3D::clear_structure() {
+    clear_body();
+}
+
+void SoftBodySolver3D::refresh_compliance() {
+    for (Beam &beam : beams) {
+        const real_t k = std::max(beam_stiffness * beam.stiffness_scale, real_t(1.0));
+        beam.compliance = real_t(1.0) / k;
+    }
+}
+
+int32_t SoftBodySolver3D::add_node(const Vector3 &p_position, real_t p_mass) {
+    if (static_cast<int32_t>(particles.size()) >= MAX_NODES) {
+        return -1;
+    }
+
+    Particle particle;
+    particle.position = p_position;
+    particle.previous_position = p_position;
+    particle.rest_position = p_position;
+    particle.inverse_mass = p_mass <= real_t(0.0) ? real_t(0.0)
+                                                  : real_t(1.0) / std::max(p_mass, real_t(0.001));
+    particles.push_back(particle);
+
+    diagnostics_dirty = true;
+    return static_cast<int32_t>(particles.size()) - 1;
+}
+
+int32_t SoftBodySolver3D::add_beam(int32_t p_a, int32_t p_b, real_t p_stiffness_scale) {
+    const int32_t node_count = static_cast<int32_t>(particles.size());
+
+    if (p_a < 0 || p_b < 0 || p_a >= node_count || p_b >= node_count || p_a == p_b) {
+        return -1;
+    }
+    if (static_cast<int32_t>(beams.size()) >= MAX_BEAMS) {
+        return -1;
+    }
+
+    const real_t length = particles[p_a].position.distance_to(particles[p_b].position);
+    if (length <= real_t(0.0001)) {
+        return -1;
+    }
+
+    Beam beam;
+    beam.a = p_a;
+    beam.b = p_b;
+    beam.rest_length = length;
+    beam.initial_rest_length = length;
+    beam.stiffness_scale = std::max(p_stiffness_scale, real_t(0.001));
+    beam.compliance = real_t(1.0) / std::max(beam_stiffness * beam.stiffness_scale, real_t(1.0));
+    beams.push_back(beam);
+
+    diagnostics_dirty = true;
+    return static_cast<int32_t>(beams.size()) - 1;
+}
+
+void SoftBodySolver3D::set_beam_scales(
+    int32_t p_beam_index,
+    real_t p_stiffness_scale,
+    real_t p_damping_scale,
+    real_t p_yield_scale,
+    real_t p_break_scale,
+    real_t p_plastic_scale
+) {
+    if (p_beam_index < 0 || p_beam_index >= static_cast<int32_t>(beams.size())) {
+        return;
+    }
+
+    Beam &beam = beams[p_beam_index];
+    beam.stiffness_scale = std::max(p_stiffness_scale, real_t(0.001));
+    beam.damping_scale = std::max(p_damping_scale, real_t(0.0));
+    beam.yield_scale = std::max(p_yield_scale, real_t(0.001));
+    beam.break_scale = std::max(p_break_scale, real_t(0.001));
+    beam.plastic_scale = std::max(p_plastic_scale, real_t(0.0));
+    beam.compliance = real_t(1.0) / std::max(beam_stiffness * beam.stiffness_scale, real_t(1.0));
+}
+
+void SoftBodySolver3D::finish_build() {
+    if (particles.empty()) {
+        return;
+    }
+
+    good_position.resize(particles.size());
+    good_velocity.resize(particles.size());
+
+    accumulator = 0.0;
+    frame_rotation = Quaternion();
+    diagnostics_dirty = true;
+    set_physics_process(true);
 }
 
 void SoftBodySolver3D::create_box(
@@ -190,32 +372,30 @@ void SoftBodySolver3D::create_box(
     };
 
     particles.reserve(static_cast<size_t>(nx) * ny * nz);
+    beams.reserve(static_cast<size_t>(nx) * ny * nz * 16);
 
     for (int32_t z = 0; z < nz; ++z) {
         for (int32_t y = 0; y < ny; ++y) {
             for (int32_t x = 0; x < nx; ++x) {
-                Particle particle;
-
                 const real_t fx = real_t(x) / real_t(nx - 1);
                 const real_t fy = real_t(y) / real_t(ny - 1);
                 const real_t fz = real_t(z) / real_t(nz - 1);
 
-                particle.position = p_center + Vector3(
-                    (fx - 0.5) * size.x,
-                    (fy - 0.5) * size.y,
-                    (fz - 0.5) * size.z
+                add_node(
+                    p_center + Vector3(
+                        (fx - real_t(0.5)) * size.x,
+                        (fy - real_t(0.5)) * size.y,
+                        (fz - real_t(0.5)) * size.z
+                    ),
+                    real_t(1.0)
                 );
-
-                particle.previous_position = particle.position;
-                particle.rest_position = particle.position;
-                particles.push_back(particle);
             }
         }
     }
 
-    auto add_beam = [&](int32_t x, int32_t y, int32_t z,
-                        int32_t dx, int32_t dy, int32_t dz,
-                        real_t stiffness) {
+    auto link = [&](int32_t x, int32_t y, int32_t z,
+                    int32_t dx, int32_t dy, int32_t dz,
+                    real_t stiffness_scale) {
         const int32_t tx = x + dx;
         const int32_t ty = y + dy;
         const int32_t tz = z + dz;
@@ -224,21 +404,7 @@ void SoftBodySolver3D::create_box(
             return;
         }
 
-        Beam beam;
-        beam.a = index(x, y, z);
-        beam.b = index(tx, ty, tz);
-        beam.rest_length = particles[beam.a].position.distance_to(
-            particles[beam.b].position
-        );
-        beam.initial_rest_length = beam.rest_length;
-        beam.stiffness = stiffness;
-        beam.yield_strain = default_yield_strain;
-        beam.break_strain = default_break_strain;
-        beam.plastic_creep = default_plastic_creep;
-
-        if (beam.rest_length > real_t(0.0001)) {
-            beams.push_back(beam);
-        }
+        add_beam(index(x, y, z), index(tx, ty, tz), stiffness_scale);
     };
 
     // Structural and shear beams: one-neighbour offsets in 3D.
@@ -258,26 +424,83 @@ void SoftBodySolver3D::create_box(
                             const int32_t offset_count =
                                 std::abs(dx) + std::abs(dy) + std::abs(dz);
 
-                            const real_t stiffness =
+                            const real_t stiffness_scale =
                                 offset_count == 1 ? real_t(0.82) :
                                 offset_count == 2 ? real_t(0.58) :
                                                      real_t(0.46);
 
-                            add_beam(x, y, z, dx, dy, dz, stiffness);
+                            link(x, y, z, dx, dy, dz, stiffness_scale);
                         }
                     }
                 }
 
-                // Longer span beams (weak; see review notes on bending).
-                add_beam(x, y, z, 2, 0, 0, real_t(0.18));
-                add_beam(x, y, z, 0, 2, 0, real_t(0.18));
-                add_beam(x, y, z, 0, 0, 2, real_t(0.18));
+                // Longer span beams (weak; real bending resistance comes later).
+                link(x, y, z, 2, 0, 0, real_t(0.18));
+                link(x, y, z, 0, 2, 0, real_t(0.18));
+                link(x, y, z, 0, 0, 2, real_t(0.18));
             }
         }
     }
 
+    finish_build();
+}
+
+// ------------------------------------------------------ Mass and motion ----
+
+void SoftBodySolver3D::set_node_mass(int32_t p_node_index, real_t p_mass) {
+    if (p_node_index < 0 || p_node_index >= static_cast<int32_t>(particles.size())) {
+        return;
+    }
+
+    particles[p_node_index].inverse_mass =
+        p_mass <= real_t(0.0) ? real_t(0.0)
+                              : real_t(1.0) / std::max(p_mass, real_t(0.001));
     diagnostics_dirty = true;
-    set_physics_process(true);
+}
+
+real_t SoftBodySolver3D::get_node_mass(int32_t p_node_index) const {
+    if (p_node_index < 0 || p_node_index >= static_cast<int32_t>(particles.size())) {
+        return 0.0;
+    }
+
+    const real_t inverse_mass = particles[p_node_index].inverse_mass;
+    return inverse_mass > real_t(0.0) ? real_t(1.0) / inverse_mass : real_t(0.0);
+}
+
+void SoftBodySolver3D::set_total_mass(real_t p_mass) {
+    if (p_mass <= real_t(0.0)) {
+        return;
+    }
+
+    real_t current = 0.0;
+    for (const Particle &particle : particles) {
+        if (particle.inverse_mass > real_t(0.0)) {
+            current += real_t(1.0) / particle.inverse_mass;
+        }
+    }
+
+    if (current <= real_t(0.0)) {
+        return;
+    }
+
+    const real_t factor = p_mass / current;
+    for (Particle &particle : particles) {
+        if (particle.inverse_mass > real_t(0.0)) {
+            particle.inverse_mass /= factor;
+        }
+    }
+
+    diagnostics_dirty = true;
+}
+
+void SoftBodySolver3D::set_linear_velocity(const Vector3 &p_velocity) {
+    for (Particle &particle : particles) {
+        if (particle.inverse_mass > real_t(0.0)) {
+            particle.velocity = p_velocity;
+        }
+    }
+
+    diagnostics_dirty = true;
 }
 
 Vector3 SoftBodySolver3D::apply_impulse(
@@ -292,6 +515,10 @@ Vector3 SoftBodySolver3D::apply_impulse(
     }
 
     for (Particle &particle : particles) {
+        if (particle.inverse_mass <= real_t(0.0)) {
+            continue;
+        }
+
         const real_t distance = particle.position.distance_to(p_local_position);
 
         if (distance >= p_radius) {
@@ -300,14 +527,9 @@ Vector3 SoftBodySolver3D::apply_impulse(
 
         const real_t weight = real_t(1.0) - distance / p_radius;
 
-        particle.previous_position -=
-            p_impulse * (weight * particle.inverse_mass * fixed_step);
-
-        // Momentum change = mass * delta-v = (1 / inverse_mass) * (J * w * inverse_mass).
-        // Particles with zero inverse mass do not move and receive nothing.
-        if (particle.inverse_mass > real_t(0.0001)) {
-            delivered += p_impulse * weight;
-        }
+        // Delta-v = J * weight / mass. Momentum delivered = J * weight.
+        particle.velocity += p_impulse * (weight * particle.inverse_mass);
+        delivered += p_impulse * weight;
     }
 
     diagnostics_dirty = true;
@@ -322,19 +544,68 @@ void SoftBodySolver3D::reset_to_rest() {
     for (Particle &particle : particles) {
         particle.position = particle.rest_position;
         particle.previous_position = particle.rest_position;
+        particle.velocity = Vector3();
     }
 
     for (Beam &beam : beams) {
         beam.rest_length = beam.initial_rest_length;
+        beam.lambda = 0.0;
+        beam.overload = 0;
         beam.broken = false;
     }
 
     broken_beam_count = 0;
+    fault_count = 0;
+    plastic_work = 0.0;
+    damper_work = 0.0;
     accumulator = 0.0;
     max_strain = 0.0;
+    tick_max_strain = 0.0;
+    wall_contacts = 0;
+    tick_wall_impulse = Vector3();
+    wall_force = Vector3();
+    wall_impulse_total = Vector3();
+    wall_peak_force = 0.0;
     frame_rotation = Quaternion();
     diagnostics_dirty = true;
 }
+
+// --------------------------------------------------------------- Wall ------
+
+void SoftBodySolver3D::set_wall(
+    bool p_enabled,
+    const Vector3 &p_normal,
+    real_t p_offset,
+    real_t p_friction
+) {
+    if (p_normal.length_squared() <= real_t(0.000001)) {
+        wall_enabled = false;
+        return;
+    }
+
+    wall_enabled = p_enabled;
+    wall_normal = p_normal.normalized();
+    wall_offset = p_offset;
+    wall_friction = std::clamp(p_friction, real_t(0.0), real_t(2.0));
+}
+
+real_t SoftBodySolver3D::get_wall_force() const {
+    return wall_force.length();
+}
+
+real_t SoftBodySolver3D::get_wall_peak_force() const {
+    return wall_peak_force;
+}
+
+Vector3 SoftBodySolver3D::get_wall_impulse() const {
+    return wall_impulse_total;
+}
+
+int32_t SoftBodySolver3D::get_wall_contact_count() const {
+    return wall_contacts;
+}
+
+// ----------------------------------------------------------- Settings ------
 
 void SoftBodySolver3D::set_gravity(const Vector3 &value) {
     gravity = value;
@@ -344,12 +615,20 @@ Vector3 SoftBodySolver3D::get_gravity() const {
     return gravity;
 }
 
-void SoftBodySolver3D::set_damping(real_t value) {
-    damping = std::clamp(value, real_t(0.0), real_t(1.0));
+void SoftBodySolver3D::set_global_drag(real_t value) {
+    global_drag = std::clamp(value, real_t(0.0), real_t(10.0));
 }
 
-real_t SoftBodySolver3D::get_damping() const {
-    return damping;
+real_t SoftBodySolver3D::get_global_drag() const {
+    return global_drag;
+}
+
+void SoftBodySolver3D::set_beam_damping(real_t value) {
+    beam_damping = std::clamp(value, real_t(0.0), real_t(200.0));
+}
+
+real_t SoftBodySolver3D::get_beam_damping() const {
+    return beam_damping;
 }
 
 void SoftBodySolver3D::set_solver_iterations(int32_t value) {
@@ -360,6 +639,14 @@ int32_t SoftBodySolver3D::get_solver_iterations() const {
     return solver_iterations;
 }
 
+void SoftBodySolver3D::set_substeps(int32_t value) {
+    substeps = std::clamp(value, 1, 32);
+}
+
+int32_t SoftBodySolver3D::get_substeps() const {
+    return substeps;
+}
+
 void SoftBodySolver3D::set_fixed_step(real_t value) {
     fixed_step = std::clamp(value, real_t(1.0 / 240.0), real_t(1.0 / 30.0));
 }
@@ -368,124 +655,326 @@ real_t SoftBodySolver3D::get_fixed_step() const {
     return fixed_step;
 }
 
-void SoftBodySolver3D::set_yield_strain(real_t value) {
-    default_yield_strain = std::clamp(value, real_t(0.001), real_t(10.0));
+void SoftBodySolver3D::set_max_speed(real_t value) {
+    max_speed = std::clamp(value, real_t(1.0), real_t(1000.0));
+}
 
-    for (Beam &beam : beams) {
-        beam.yield_strain = default_yield_strain;
-    }
+real_t SoftBodySolver3D::get_max_speed() const {
+    return max_speed;
+}
+
+void SoftBodySolver3D::set_beam_stiffness(real_t value) {
+    beam_stiffness = std::clamp(value, real_t(1000.0), real_t(1.0e8));
+    refresh_compliance();
+}
+
+real_t SoftBodySolver3D::get_beam_stiffness() const {
+    return beam_stiffness;
+}
+
+void SoftBodySolver3D::set_yield_strain(real_t value) {
+    yield_strain = std::clamp(value, real_t(0.001), real_t(1.0));
 }
 
 real_t SoftBodySolver3D::get_yield_strain() const {
-    return default_yield_strain;
+    return yield_strain;
 }
 
 void SoftBodySolver3D::set_break_strain(real_t value) {
-    default_break_strain = std::clamp(value, real_t(0.001), real_t(10.0));
-
-    for (Beam &beam : beams) {
-        beam.break_strain = default_break_strain;
-    }
+    break_strain = std::clamp(value, real_t(0.01), real_t(10.0));
 }
 
 real_t SoftBodySolver3D::get_break_strain() const {
-    return default_break_strain;
+    return break_strain;
 }
 
-void SoftBodySolver3D::set_plastic_creep(real_t value) {
-    default_plastic_creep = std::clamp(value, real_t(0.0), real_t(1.0));
-
-    for (Beam &beam : beams) {
-        beam.plastic_creep = default_plastic_creep;
-    }
+void SoftBodySolver3D::set_break_hold(real_t value) {
+    break_hold = std::clamp(value, real_t(0.0), real_t(0.1));
 }
 
-real_t SoftBodySolver3D::get_plastic_creep() const {
-    return default_plastic_creep;
+real_t SoftBodySolver3D::get_break_hold() const {
+    return break_hold;
 }
 
-void SoftBodySolver3D::solve_constraints() {
-    for (int32_t iteration = 0; iteration < solver_iterations; ++iteration) {
-        for (Beam &beam : beams) {
-            if (beam.broken) {
-                continue;
-            }
-
-            Particle &a = particles[beam.a];
-            Particle &b = particles[beam.b];
-
-            Vector3 difference = b.position - a.position;
-            const real_t distance = difference.length();
-
-            if (distance <= real_t(0.0001)) {
-                continue;
-            }
-
-            const real_t error = distance - beam.rest_length;
-            const Vector3 correction =
-                difference / distance * error * beam.stiffness;
-
-            const real_t inverse_total = a.inverse_mass + b.inverse_mass;
-
-            if (inverse_total <= real_t(0.0001)) {
-                continue;
-            }
-
-            a.position += correction * (a.inverse_mass / inverse_total);
-            b.position -= correction * (b.inverse_mass / inverse_total);
-        }
-    }
+void SoftBodySolver3D::set_plastic_rate(real_t value) {
+    plastic_rate = std::clamp(value, real_t(0.0), real_t(2000.0));
 }
 
-void SoftBodySolver3D::simulate_step(real_t delta) {
-    max_strain = 0.0;
+real_t SoftBodySolver3D::get_plastic_rate() const {
+    return plastic_rate;
+}
+
+// --------------------------------------------------------- Simulation ------
+
+void SoftBodySolver3D::integrate(real_t h) {
+    const real_t max_speed_sq = max_speed * max_speed;
+    const Vector3 gravity_dv = gravity * h;
 
     for (Particle &particle : particles) {
-        const Vector3 current = particle.position;
-        const Vector3 velocity = (particle.position - particle.previous_position) * damping;
+        particle.previous_position = particle.position;
 
-        particle.position += velocity + gravity * delta * delta;
-        particle.previous_position = current;
+        if (particle.inverse_mass <= real_t(0.0)) {
+            particle.velocity = Vector3();
+            continue;
+        }
+
+        particle.velocity += gravity_dv;
+
+        const real_t speed_sq = particle.velocity.length_squared();
+        if (speed_sq > max_speed_sq) {
+            particle.velocity *= max_speed / std::sqrt(speed_sq);
+        }
+
+        particle.position += particle.velocity * h;
+    }
+}
+
+// XPBD distance constraint: C = |pb - pa| - rest.
+//   dlambda = (-C - alpha * lambda) / (wa + wb + alpha),  alpha = compliance / h^2
+// With one iteration lambda starts at 0 each substep, so no reset pass is needed.
+void SoftBodySolver3D::solve_beams(real_t inv_h2, int32_t iteration, bool reverse) {
+    const int32_t count = static_cast<int32_t>(beams.size());
+
+    for (int32_t i = 0; i < count; ++i) {
+        Beam &beam = beams[reverse ? count - 1 - i : i];
+
+        if (beam.broken) {
+            continue;
+        }
+
+        Particle &pa = particles[beam.a];
+        Particle &pb = particles[beam.b];
+
+        const Vector3 delta = pb.position - pa.position;
+        const real_t distance = delta.length();
+
+        if (distance <= real_t(0.000001)) {
+            continue;
+        }
+
+        const real_t alpha = beam.compliance * inv_h2;
+        const real_t w_sum = pa.inverse_mass + pb.inverse_mass;
+        const real_t constraint = distance - beam.rest_length;
+        const real_t lambda = iteration == 0 ? real_t(0.0) : beam.lambda;
+
+        const real_t d_lambda = (-constraint - alpha * lambda) / (w_sum + alpha);
+        beam.lambda = lambda + d_lambda;
+
+        const Vector3 direction = delta / distance;
+        pa.position -= direction * (pa.inverse_mass * d_lambda);
+        pb.position += direction * (pb.inverse_mass * d_lambda);
+    }
+}
+
+void SoftBodySolver3D::solve_wall(real_t h) {
+    const real_t inv_h = real_t(1.0) / h;
+    int32_t contacts = 0;
+
+    for (Particle &particle : particles) {
+        if (particle.inverse_mass <= real_t(0.0)) {
+            continue;
+        }
+
+        const real_t penetration = wall_offset - particle.position.dot(wall_normal);
+
+        if (penetration <= real_t(0.0)) {
+            continue;
+        }
+
+        ++contacts;
+        Vector3 correction = wall_normal * penetration;
+
+        if (wall_friction > real_t(0.0)) {
+            const Vector3 move = particle.position - particle.previous_position;
+            const Vector3 tangent = move - wall_normal * move.dot(wall_normal);
+            const real_t tangent_length = tangent.length();
+
+            if (tangent_length > real_t(0.000000001)) {
+                const real_t factor =
+                    std::min(real_t(1.0), wall_friction * penetration / tangent_length);
+                correction -= tangent * factor;
+            }
+        }
+
+        particle.position += correction;
+        tick_wall_impulse += correction * (inv_h / particle.inverse_mass);
     }
 
-    // Plasticity and break checks use the uncorrected frame strain.
-    // (Unchanged in Stage 2a; revisited in Stage 3.)
+    wall_contacts = contacts;
+}
+
+// Runs once per substep after velocities are updated:
+//   1. relative axial damping (momentum conserving)
+//   2. plasticity on the settled strain
+//   3. tension breakage with a short hold time
+void SoftBodySolver3D::update_beams(real_t h) {
+    const int32_t hold_substeps = std::clamp(
+        static_cast<int32_t>(std::ceil(break_hold / h)), 1, 255
+    );
+
     for (Beam &beam : beams) {
         if (beam.broken) {
             continue;
         }
 
-        const real_t distance = particles[beam.a].position.distance_to(
-            particles[beam.b].position
-        );
+        Particle &pa = particles[beam.a];
+        Particle &pb = particles[beam.b];
 
-        if (beam.rest_length <= real_t(0.0001)) {
+        const Vector3 delta = pb.position - pa.position;
+        const real_t distance = delta.length();
+
+        if (distance <= real_t(0.000001)) {
             continue;
         }
 
-        const real_t strain = std::abs(distance - beam.rest_length) / beam.rest_length;
-        max_strain = std::max(max_strain, strain);
+        const Vector3 direction = delta / distance;
+        const real_t w_sum = pa.inverse_mass + pb.inverse_mass;
 
-        if (strain >= beam.break_strain) {
-            beam.broken = true;
-            ++broken_beam_count;
-            continue;
+        // 1. Axial damping: remove a fraction of the relative velocity along the beam.
+        if (w_sum > real_t(0.0) && beam_damping > real_t(0.0) && beam.damping_scale > real_t(0.0)) {
+            const real_t factor =
+                std::min(beam_damping * beam.damping_scale * h, real_t(0.9));
+            const real_t relative = (pb.velocity - pa.velocity).dot(direction);
+            const real_t impulse = relative * factor / w_sum;
+
+            pa.velocity += direction * (impulse * pa.inverse_mass);
+            pb.velocity -= direction * (impulse * pb.inverse_mass);
+
+            damper_work += 0.5 * (1.0 / double(w_sum)) * double(relative) * double(relative)
+                * double(factor) * (2.0 - double(factor));
         }
 
-        if (strain >= beam.yield_strain) {
-            const real_t creep = beam.plastic_creep * (delta / fixed_step);
+        // 2. Plasticity (elastic-perfectly-plastic, rate limited).
+        const real_t strain = (distance - beam.rest_length) / beam.rest_length;
+        tick_max_strain = std::max(tick_max_strain, std::abs(strain));
 
-            beam.rest_length += (distance - beam.rest_length) * creep;
+        const real_t yield_limit = std::min(yield_strain * beam.yield_scale, real_t(0.9));
+        const real_t rate = std::min(plastic_rate * beam.plastic_scale * h, real_t(1.0));
 
-            beam.rest_length = std::clamp(
-                beam.rest_length,
-                beam.initial_rest_length * real_t(0.65),
-                beam.initial_rest_length * real_t(1.50)
+        if (rate > real_t(0.0) && std::abs(strain) > yield_limit) {
+            const real_t target = strain > real_t(0.0)
+                ? distance / (real_t(1.0) + yield_limit)
+                : distance / (real_t(1.0) - yield_limit);
+
+            real_t new_rest = beam.rest_length + (target - beam.rest_length) * rate;
+            new_rest = std::clamp(
+                new_rest,
+                beam.initial_rest_length * MIN_REST_RATIO,
+                beam.initial_rest_length * MAX_REST_RATIO
             );
+
+            const double stiffness = 1.0 / double(beam.compliance);
+            const double before = double(distance - beam.rest_length);
+            const double after = double(distance - new_rest);
+            plastic_work += 0.5 * stiffness * (before * before - after * after);
+
+            beam.rest_length = new_rest;
+        }
+
+        // 3. Tension breakage. Compression never breaks a beam (crush is limited
+        // by MIN_REST_RATIO instead).
+        const real_t break_limit = break_strain * beam.break_scale;
+
+        if (distance > beam.initial_rest_length * (real_t(1.0) + break_limit)) {
+            if (beam.overload < 255) {
+                ++beam.overload;
+            }
+
+            if (beam.overload >= hold_substeps) {
+                beam.broken = true;
+                ++broken_beam_count;
+            }
+        } else {
+            beam.overload = 0;
+        }
+    }
+}
+
+void SoftBodySolver3D::simulate_tick() {
+    const real_t h = fixed_step / real_t(substeps);
+    const real_t inv_h = real_t(1.0) / h;
+    const real_t inv_h2 = inv_h * inv_h;
+    const real_t drag_factor = std::max(real_t(0.0), real_t(1.0) - global_drag * h);
+    const real_t max_speed_sq = max_speed * max_speed;
+
+    tick_max_strain = 0.0;
+    tick_wall_impulse = Vector3();
+
+    // Snapshot for rollback.
+    if (good_position.size() != particles.size()) {
+        good_position.resize(particles.size());
+        good_velocity.resize(particles.size());
+    }
+    for (size_t i = 0; i < particles.size(); ++i) {
+        good_position[i] = particles[i].position;
+        good_velocity[i] = particles[i].velocity;
+    }
+
+    for (int32_t step = 0; step < substeps; ++step) {
+        integrate(h);
+
+        // Alternate the solve direction so no beam ordering is favoured.
+        for (int32_t iteration = 0; iteration < solver_iterations; ++iteration) {
+            solve_beams(inv_h2, iteration, ((substep_counter + iteration) & 1u) != 0u);
+        }
+
+        if (wall_enabled) {
+            solve_wall(h);
+        }
+
+        // Velocities from the settled positions.
+        for (Particle &particle : particles) {
+            if (particle.inverse_mass <= real_t(0.0)) {
+                continue;
+            }
+
+            particle.velocity = (particle.position - particle.previous_position) * inv_h;
+            particle.velocity *= drag_factor;
+
+            const real_t speed_sq = particle.velocity.length_squared();
+            if (speed_sq > max_speed_sq) {
+                particle.velocity *= max_speed / std::sqrt(speed_sq);
+            }
+        }
+
+        update_beams(h);
+        ++substep_counter;
+    }
+
+    // Safety: detect NaN/Inf and roll back this tick.
+    bool finite = true;
+    for (const Particle &particle : particles) {
+        const real_t sum = particle.position.x + particle.position.y + particle.position.z
+            + particle.velocity.x + particle.velocity.y + particle.velocity.z;
+        if (!std::isfinite(sum)) {
+            finite = false;
+            break;
         }
     }
 
-    solve_constraints();
+    if (!finite) {
+        for (size_t i = 0; i < particles.size(); ++i) {
+            particles[i].position = good_position[i];
+            particles[i].previous_position = good_position[i];
+            particles[i].velocity = Vector3();
+        }
+        for (Beam &beam : beams) {
+            if (!std::isfinite(beam.rest_length) || beam.rest_length <= real_t(0.0)) {
+                beam.rest_length = beam.initial_rest_length;
+            }
+            beam.lambda = 0.0;
+        }
+        ++fault_count;
+        tick_max_strain = 0.0;
+        tick_wall_impulse = Vector3();
+    }
+
+    max_strain = tick_max_strain;
+
+    wall_force = tick_wall_impulse / fixed_step;
+    wall_impulse_total += tick_wall_impulse;
+    wall_peak_force = std::max(wall_peak_force, wall_force.length());
+
     diagnostics_dirty = true;
 }
 
@@ -494,37 +983,45 @@ void SoftBodySolver3D::_physics_process(double p_delta) {
         return;
     }
 
+    const uint64_t start_us = Time::get_singleton()->get_ticks_usec();
+
     accumulator += std::min(real_t(p_delta), real_t(0.1));
 
-    int32_t steps = 0;
+    int32_t ticks = 0;
 
-    while (accumulator >= fixed_step && steps < MAX_STEPS_PER_FRAME) {
-        simulate_step(fixed_step);
+    while (accumulator >= fixed_step && ticks < MAX_TICKS_PER_FRAME) {
+        simulate_tick();
         accumulator -= fixed_step;
-        ++steps;
+        ++ticks;
     }
 
     // Discard excess backlog rather than allowing an expensive catch-up spiral.
-    if (steps == MAX_STEPS_PER_FRAME && accumulator > fixed_step) {
+    if (ticks == MAX_TICKS_PER_FRAME && accumulator > fixed_step) {
         accumulator = fixed_step;
     }
+
+    if (ticks > 0) {
+        const double elapsed =
+            static_cast<double>(Time::get_singleton()->get_ticks_usec() - start_us);
+        step_time_us = step_time_us <= 0.0 ? elapsed : step_time_us * 0.9 + elapsed * 0.1;
+    }
 }
+
+// -------------------------------------------------------- Diagnostics ------
 
 void SoftBodySolver3D::compute_diagnostics() const {
     Diagnostics d;
 
     const real_t epsilon = real_t(0.0001);
-    const real_t inv_dt = real_t(1.0) / fixed_step;
 
-    // Pass 1: mass, centers of mass, momentum. Particles with zero inverse
-    // mass are treated as pinned and excluded.
+    // Pass 1: mass, centers of mass, momentum. Pinned particles are excluded.
     real_t total_mass = 0.0;
     Vector3 com;
     Vector3 rest_com;
     Vector3 momentum;
 
     for (const Particle &p : particles) {
-        if (p.inverse_mass <= epsilon) {
+        if (p.inverse_mass <= real_t(0.0)) {
             continue;
         }
 
@@ -532,7 +1029,7 @@ void SoftBodySolver3D::compute_diagnostics() const {
         total_mass += m;
         com += p.position * m;
         rest_com += p.rest_position * m;
-        momentum += (p.position - p.previous_position) * (inv_dt * m);
+        momentum += p.velocity * m;
     }
 
     d.total_mass = total_mass;
@@ -558,17 +1055,16 @@ void SoftBodySolver3D::compute_diagnostics() const {
     real_t kinetic = 0.0;
 
     for (const Particle &p : particles) {
-        if (p.inverse_mass <= epsilon) {
+        if (p.inverse_mass <= real_t(0.0)) {
             continue;
         }
 
         const real_t m = real_t(1.0) / p.inverse_mass;
-        const Vector3 velocity = (p.position - p.previous_position) * inv_dt;
         const Vector3 r = p.position - com;
         const Vector3 q = p.rest_position - rest_com;
 
-        angular += r.cross(velocity) * m;
-        kinetic += real_t(0.5) * m * velocity.length_squared();
+        angular += r.cross(p.velocity) * m;
+        kinetic += real_t(0.5) * m * p.velocity.length_squared();
 
         a_col[0] += r * (m * q.x);
         a_col[1] += r * (m * q.y);
@@ -630,7 +1126,9 @@ void SoftBodySolver3D::compute_diagnostics() const {
     }
     d.max_deformation = std::sqrt(max_squared);
 
-    // Post-solve strain and plastic beam count.
+    // Beam measurements: strain, elastic energy, plastic beam count.
+    double elastic = 0.0;
+
     for (const Beam &beam : beams) {
         if (beam.broken || beam.rest_length <= epsilon) {
             continue;
@@ -639,8 +1137,11 @@ void SoftBodySolver3D::compute_diagnostics() const {
         const real_t distance = particles[beam.a].position.distance_to(
             particles[beam.b].position
         );
-        const real_t strain = std::abs(distance - beam.rest_length) / beam.rest_length;
+        const real_t extension = distance - beam.rest_length;
+        const real_t strain = std::abs(extension) / beam.rest_length;
         d.max_strain_post_solve = std::max(d.max_strain_post_solve, strain);
+
+        elastic += 0.5 * double(extension) * double(extension) / double(beam.compliance);
 
         if (beam.initial_rest_length > epsilon &&
             std::abs(beam.rest_length / beam.initial_rest_length - real_t(1.0)) >
@@ -648,6 +1149,8 @@ void SoftBodySolver3D::compute_diagnostics() const {
             ++d.yielded_beam_count;
         }
     }
+
+    d.elastic_energy = static_cast<real_t>(elastic);
 
     diagnostics = d;
     diagnostics_dirty = false;
@@ -715,6 +1218,14 @@ real_t SoftBodySolver3D::get_max_strain() const {
     return max_strain;
 }
 
+int32_t SoftBodySolver3D::get_fault_count() const {
+    return fault_count;
+}
+
+real_t SoftBodySolver3D::get_step_time_us() const {
+    return static_cast<real_t>(step_time_us);
+}
+
 real_t SoftBodySolver3D::get_total_mass() const {
     ensure_diagnostics();
     return diagnostics.total_mass;
@@ -723,6 +1234,11 @@ real_t SoftBodySolver3D::get_total_mass() const {
 Vector3 SoftBodySolver3D::get_center_of_mass() const {
     ensure_diagnostics();
     return diagnostics.center_of_mass;
+}
+
+Vector3 SoftBodySolver3D::get_rest_center_of_mass() const {
+    ensure_diagnostics();
+    return diagnostics.rest_center_of_mass;
 }
 
 Vector3 SoftBodySolver3D::get_linear_velocity() const {
@@ -748,6 +1264,19 @@ real_t SoftBodySolver3D::get_kinetic_energy() const {
 real_t SoftBodySolver3D::get_internal_kinetic_energy() const {
     ensure_diagnostics();
     return diagnostics.internal_kinetic_energy;
+}
+
+real_t SoftBodySolver3D::get_elastic_energy() const {
+    ensure_diagnostics();
+    return diagnostics.elastic_energy;
+}
+
+real_t SoftBodySolver3D::get_plastic_work() const {
+    return static_cast<real_t>(plastic_work);
+}
+
+real_t SoftBodySolver3D::get_damper_work() const {
+    return static_cast<real_t>(damper_work);
 }
 
 Transform3D SoftBodySolver3D::get_rigid_frame() const {
