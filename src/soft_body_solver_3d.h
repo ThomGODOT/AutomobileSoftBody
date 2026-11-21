@@ -78,6 +78,10 @@ private:
     int32_t substeps = 8;
     int32_t active_substeps = 8;
     int32_t solver_iterations = 1;
+    int32_t effective_iterations = 1;
+    bool auto_stabilize = true;
+    bool stability_dirty = true;
+    real_t omega_max = 0.0;
     real_t global_drag = 0.0;
     real_t settle_damping = 8.0;
     real_t max_speed = 100.0;
@@ -145,6 +149,7 @@ private:
     void remove_mean_velocity();
 
     void refresh_compliance();
+    void compute_stability();
     void enter_sleep();
     void touch(real_t max_delta_v_squared);
     real_t total_kinetic_energy() const;
@@ -242,6 +247,11 @@ public:
 
     void set_solver_iterations(int32_t value);
     int32_t get_solver_iterations() const;
+
+    void set_auto_stabilize(bool value);
+    bool get_auto_stabilize() const;
+    real_t get_stability_ratio() const;
+    int32_t get_effective_iterations() const;
 
     void set_substeps(int32_t value);
     int32_t get_substeps() const;

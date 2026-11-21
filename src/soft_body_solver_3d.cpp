@@ -115,6 +115,17 @@ void SoftBodySolver3D::_bind_methods() {
         &SoftBodySolver3D::get_solver_iterations
     );
 
+    ClassDB::bind_method(
+        D_METHOD("set_auto_stabilize", "value"),
+        &SoftBodySolver3D::set_auto_stabilize
+    );
+    ClassDB::bind_method(D_METHOD("get_auto_stabilize"), &SoftBodySolver3D::get_auto_stabilize);
+    ClassDB::bind_method(D_METHOD("get_stability_ratio"), &SoftBodySolver3D::get_stability_ratio);
+    ClassDB::bind_method(
+        D_METHOD("get_effective_iterations"),
+        &SoftBodySolver3D::get_effective_iterations
+    );
+
     ClassDB::bind_method(D_METHOD("set_substeps", "value"), &SoftBodySolver3D::set_substeps);
     ClassDB::bind_method(D_METHOD("get_substeps"), &SoftBodySolver3D::get_substeps);
     ClassDB::bind_method(D_METHOD("get_active_substeps"), &SoftBodySolver3D::get_active_substeps);
@@ -257,6 +268,7 @@ void SoftBodySolver3D::_bind_methods() {
         "set_solver_iterations",
         "get_solver_iterations"
     );
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "auto_stabilize"), "set_auto_stabilize", "get_auto_stabilize");
     ADD_PROPERTY(
         PropertyInfo(Variant::INT, "substeps", PROPERTY_HINT_RANGE, "1,32,1"),
         "set_substeps",
@@ -396,6 +408,31 @@ void SoftBodySolver3D::refresh_compliance() {
         const real_t k = std::max(beam_stiffness * beam.stiffness_scale, real_t(1.0));
         beam.compliance = real_t(1.0) / k;
     }
+
+    stability_dirty = true;
+}
+
+void SoftBodySolver3D::compute_stability() {
+    std::vector<real_t> stiffness_sum(particles.size(), real_t(0.0));
+
+    for (const Beam &beam : beams) {
+        if (beam.broken) {
+            continue;
+        }
+
+        const real_t k = real_t(1.0) / std::max(beam.compliance, real_t(1.0e-12));
+        stiffness_sum[beam.a] += k;
+        stiffness_sum[beam.b] += k;
+    }
+
+    real_t worst = 0.0;
+
+    for (size_t i = 0; i < particles.size(); ++i) {
+        worst = std::max(worst, stiffness_sum[i] * particles[i].inverse_mass);
+    }
+
+    omega_max = std::sqrt(worst);
+    stability_dirty = false;
 }
 
 void SoftBodySolver3D::enter_sleep() {
@@ -534,6 +571,7 @@ void SoftBodySolver3D::set_beam_scales(
     beam.break_scale = std::max(p_break_scale, real_t(0.001));
     beam.plastic_scale = std::max(p_plastic_scale, real_t(0.0));
     beam.compliance = real_t(1.0) / std::max(beam_stiffness * beam.stiffness_scale, real_t(1.0));
+    stability_dirty = true;
 }
 
 void SoftBodySolver3D::finish_build() {
@@ -547,6 +585,7 @@ void SoftBodySolver3D::finish_build() {
     accumulator = 0.0;
     frame_rotation = Quaternion();
     diagnostics_dirty = true;
+    stability_dirty = true;
     sleeping = false;
     sleep_counter = 0;
     active_substeps = substeps;
@@ -657,6 +696,7 @@ void SoftBodySolver3D::set_node_mass(int32_t p_node_index, real_t p_mass) {
         p_mass <= real_t(0.0) ? real_t(0.0)
                               : real_t(1.0) / std::max(p_mass, real_t(0.001));
     diagnostics_dirty = true;
+    stability_dirty = true;
 }
 
 real_t SoftBodySolver3D::get_node_mass(int32_t p_node_index) const {
@@ -692,6 +732,7 @@ void SoftBodySolver3D::set_total_mass(real_t p_mass) {
     }
 
     diagnostics_dirty = true;
+    stability_dirty = true;
 }
 
 void SoftBodySolver3D::set_linear_velocity(const Vector3 &p_velocity) {
@@ -1095,6 +1136,22 @@ real_t SoftBodySolver3D::get_beam_damping() const {
 
 void SoftBodySolver3D::set_solver_iterations(int32_t value) {
     solver_iterations = std::clamp(value, 1, 8);
+}
+
+void SoftBodySolver3D::set_auto_stabilize(bool value) {
+    auto_stabilize = value;
+}
+
+bool SoftBodySolver3D::get_auto_stabilize() const {
+    return auto_stabilize;
+}
+
+real_t SoftBodySolver3D::get_stability_ratio() const {
+    return omega_max * fixed_step / real_t(std::max(active_substeps, MIN_ACTIVE_SUBSTEPS));
+}
+
+int32_t SoftBodySolver3D::get_effective_iterations() const {
+    return effective_iterations;
 }
 
 int32_t SoftBodySolver3D::get_solver_iterations() const {
@@ -1589,6 +1646,25 @@ void SoftBodySolver3D::simulate_tick() {
     const real_t settle_factor = std::min(settle_damping * h, real_t(0.9));
     const real_t max_speed_sq = max_speed * max_speed;
 
+    if (stability_dirty) {
+        compute_stability();
+    }
+
+    const real_t stability = omega_max * h;
+    int32_t iterations = solver_iterations;
+
+    if (auto_stabilize) {
+        if (stability > real_t(16.0)) {
+            iterations = std::max(iterations, 4);
+        } else if (stability > real_t(8.0)) {
+            iterations = std::max(iterations, 3);
+        } else if (stability > real_t(3.0)) {
+            iterations = std::max(iterations, 2);
+        }
+    }
+
+    effective_iterations = iterations;
+
     tick_max_strain = 0.0;
     tick_peak_speed_sq = 0.0;
     tick_wall_impulse = Vector3();
@@ -1606,7 +1682,7 @@ void SoftBodySolver3D::simulate_tick() {
     for (int32_t step = 0; step < steps; ++step) {
         integrate(h);
 
-        for (int32_t iteration = 0; iteration < solver_iterations; ++iteration) {
+        for (int32_t iteration = 0; iteration < iterations; ++iteration) {
             solve_beams(inv_h2, iteration, ((substep_counter + iteration) & 1u) != 0u);
         }
 
@@ -2020,6 +2096,8 @@ Dictionary SoftBodySolver3D::get_stats() const {
     Dictionary stats;
     stats[String("sleeping")] = sleeping;
     stats[String("active_substeps")] = active_substeps;
+    stats[String("iterations")] = effective_iterations;
+    stats[String("stability_ratio")] = get_stability_ratio();
     stats[String("step_time_us")] = static_cast<real_t>(step_time_us);
     stats[String("fault_count")] = fault_count;
     stats[String("broken_beams")] = broken_beam_count;
