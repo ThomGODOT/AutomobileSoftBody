@@ -43,6 +43,35 @@ void SoftBodySolver3D::_bind_methods() {
     );
     ClassDB::bind_method(D_METHOD("finish_build"), &SoftBodySolver3D::finish_build);
 
+    ClassDB::bind_method(D_METHOD("set_node_part", "node_index", "part"), &SoftBodySolver3D::set_node_part);
+    ClassDB::bind_method(D_METHOD("set_nodes_part", "node_indices", "part"), &SoftBodySolver3D::set_nodes_part);
+    ClassDB::bind_method(D_METHOD("get_node_part", "node_index"), &SoftBodySolver3D::get_node_part);
+    ClassDB::bind_method(D_METHOD("get_node_parts"), &SoftBodySolver3D::get_node_parts);
+    ClassDB::bind_method(D_METHOD("get_part_nodes", "part"), &SoftBodySolver3D::get_part_nodes);
+    ClassDB::bind_method(D_METHOD("get_part_count"), &SoftBodySolver3D::get_part_count);
+    ClassDB::bind_method(
+        D_METHOD("set_part_joint_strength", "part", "stiffness_scale", "yield_scale", "break_scale"),
+        &SoftBodySolver3D::set_part_joint_strength
+    );
+    ClassDB::bind_method(D_METHOD("get_part_attachment", "part"), &SoftBodySolver3D::get_part_attachment);
+    ClassDB::bind_method(D_METHOD("get_part_damage", "part"), &SoftBodySolver3D::get_part_damage);
+    ClassDB::bind_method(D_METHOD("is_part_detached", "part"), &SoftBodySolver3D::is_part_detached);
+    ClassDB::bind_method(D_METHOD("get_detached_part_count"), &SoftBodySolver3D::get_detached_part_count);
+
+    ADD_SIGNAL(MethodInfo(
+        "beam_broken",
+        PropertyInfo(Variant::INT, "beam_index"),
+        PropertyInfo(Variant::VECTOR3, "local_position"),
+        PropertyInfo(Variant::INT, "part_a"),
+        PropertyInfo(Variant::INT, "part_b")
+    ));
+    ADD_SIGNAL(MethodInfo(
+        "part_detached",
+        PropertyInfo(Variant::INT, "part"),
+        PropertyInfo(Variant::VECTOR3, "local_position"),
+        PropertyInfo(Variant::VECTOR3, "local_velocity")
+    ));
+
     ClassDB::bind_method(D_METHOD("set_node_mass", "node_index", "mass"), &SoftBodySolver3D::set_node_mass);
     ClassDB::bind_method(D_METHOD("get_node_mass", "node_index"), &SoftBodySolver3D::get_node_mass);
     ClassDB::bind_method(D_METHOD("set_total_mass", "mass"), &SoftBodySolver3D::set_total_mass);
@@ -365,6 +394,13 @@ void SoftBodySolver3D::clear_data() {
     good_velocity.clear();
     scratch_order.clear();
     scratch_weights.clear();
+    parts.clear();
+    pending_breaks.clear();
+    pending_detaches.clear();
+    detach_queue.clear();
+    parts_dirty = true;
+    detached_part_count = 0;
+    dropped_break_events = 0;
     accumulator = 0.0;
     substep_counter = 0;
     max_strain = 0.0;
@@ -510,8 +546,10 @@ int32_t SoftBodySolver3D::add_node(const Vector3 &p_position, real_t p_mass) {
     particle.rest_position = p_position;
     particle.inverse_mass = p_mass <= real_t(0.0) ? real_t(0.0)
                                                   : real_t(1.0) / std::max(p_mass, real_t(0.001));
+    particle.saved_inverse_mass = particle.inverse_mass;
     particles.push_back(particle);
 
+    parts_dirty = true;
     diagnostics_dirty = true;
     return static_cast<int32_t>(particles.size()) - 1;
 }
@@ -548,6 +586,7 @@ int32_t SoftBodySolver3D::add_beam(
     beam.compliance = real_t(1.0) / std::max(beam_stiffness * beam.stiffness_scale, real_t(1.0));
     beams.push_back(beam);
 
+    parts_dirty = true;
     diagnostics_dirty = true;
     return static_cast<int32_t>(beams.size()) - 1;
 }
@@ -581,6 +620,8 @@ void SoftBodySolver3D::finish_build() {
 
     good_position.resize(particles.size());
     good_velocity.resize(particles.size());
+
+    rebuild_parts();
 
     accumulator = 0.0;
     frame_rotation = Quaternion();
@@ -692,9 +733,16 @@ void SoftBodySolver3D::set_node_mass(int32_t p_node_index, real_t p_mass) {
         return;
     }
 
-    particles[p_node_index].inverse_mass =
-        p_mass <= real_t(0.0) ? real_t(0.0)
-                              : real_t(1.0) / std::max(p_mass, real_t(0.001));
+    const real_t inverse_mass = p_mass <= real_t(0.0)
+        ? real_t(0.0)
+        : real_t(1.0) / std::max(p_mass, real_t(0.001));
+
+    if (particles[p_node_index].detached) {
+        particles[p_node_index].saved_inverse_mass = inverse_mass;
+    } else {
+        particles[p_node_index].inverse_mass = inverse_mass;
+        particles[p_node_index].saved_inverse_mass = inverse_mass;
+    }
     diagnostics_dirty = true;
     stability_dirty = true;
 }
@@ -953,6 +1001,22 @@ void SoftBodySolver3D::reset_to_rest() {
         beam.overload = 0;
         beam.broken = false;
     }
+
+    for (Particle &particle : particles) {
+        if (particle.detached) {
+            particle.inverse_mass = particle.saved_inverse_mass;
+            particle.detached = false;
+        }
+    }
+
+    pending_breaks.clear();
+    pending_detaches.clear();
+    detach_queue.clear();
+    detached_part_count = 0;
+    dropped_break_events = 0;
+    parts.clear();
+    rebuild_parts();
+    stability_dirty = true;
 
     broken_beam_count = 0;
     fault_count = 0;
@@ -1432,7 +1496,9 @@ void SoftBodySolver3D::update_beams(real_t h) {
         static_cast<int32_t>(std::ceil(break_hold / h)), 1, 255
     );
 
-    for (Beam &beam : beams) {
+    for (size_t beam_index = 0; beam_index < beams.size(); ++beam_index) {
+        Beam &beam = beams[beam_index];
+
         if (beam.broken) {
             continue;
         }
@@ -1515,6 +1581,7 @@ void SoftBodySolver3D::update_beams(real_t h) {
             if (beam.overload >= hold_substeps) {
                 beam.broken = true;
                 ++broken_beam_count;
+                register_break(static_cast<int32_t>(beam_index));
             }
         } else {
             beam.overload = 0;
@@ -1646,6 +1713,10 @@ void SoftBodySolver3D::simulate_tick() {
     const real_t settle_factor = std::min(settle_damping * h, real_t(0.9));
     const real_t max_speed_sq = max_speed * max_speed;
 
+    if (parts_dirty) {
+        rebuild_parts();
+    }
+
     if (stability_dirty) {
         compute_stability();
     }
@@ -1776,6 +1847,8 @@ void SoftBodySolver3D::simulate_tick() {
         tick_peak_speed_sq = drift_squared / (fixed_step * fixed_step);
     }
 
+    process_detachments();
+
     if (tick_peak_speed_sq > real_t(0.25)) {
         plastic_timer = plastic_hold;
     } else if (plastic_timer > real_t(0.0)) {
@@ -1831,6 +1904,8 @@ void SoftBodySolver3D::_physics_process(double p_delta) {
     if (ticks == MAX_TICKS_PER_FRAME && accumulator > fixed_step) {
         accumulator = fixed_step;
     }
+
+    emit_pending_events();
 
     if (ticks > 0) {
         const double elapsed =
@@ -2101,6 +2176,8 @@ Dictionary SoftBodySolver3D::get_stats() const {
     stats[String("step_time_us")] = static_cast<real_t>(step_time_us);
     stats[String("fault_count")] = fault_count;
     stats[String("broken_beams")] = broken_beam_count;
+    stats[String("detached_parts")] = detached_part_count;
+    stats[String("dropped_break_events")] = dropped_break_events;
     stats[String("yielded_beams")] = diagnostics.yielded_beam_count;
     stats[String("max_strain")] = max_strain;
     stats[String("plastic_work")] = static_cast<real_t>(plastic_work);
@@ -2215,4 +2292,284 @@ real_t SoftBodySolver3D::get_max_strain_post_solve() const {
 int32_t SoftBodySolver3D::get_yielded_beam_count() const {
     ensure_diagnostics();
     return diagnostics.yielded_beam_count;
+}
+
+void SoftBodySolver3D::rebuild_parts() {
+    std::vector<PartState> fresh(MAX_PARTS);
+
+    if (parts.size() == static_cast<size_t>(MAX_PARTS)) {
+        for (int32_t i = 0; i < MAX_PARTS; ++i) {
+            fresh[i].detached = parts[i].detached;
+        }
+    }
+
+    for (const Particle &particle : particles) {
+        ++fresh[std::clamp(particle.part, int32_t(0), MAX_PARTS - 1)].node_count;
+    }
+
+    for (const Beam &beam : beams) {
+        const int32_t part_a = particles[beam.a].part;
+        const int32_t part_b = particles[beam.b].part;
+
+        if (part_a == part_b) {
+            continue;
+        }
+
+        for (const int32_t part : {part_a, part_b}) {
+            ++fresh[part].joints_total;
+
+            if (!beam.broken) {
+                ++fresh[part].joints_alive;
+            }
+        }
+    }
+
+    parts.swap(fresh);
+    parts_dirty = false;
+}
+
+void SoftBodySolver3D::register_break(int32_t p_beam_index) {
+    const Beam &beam = beams[p_beam_index];
+    const Particle &pa = particles[beam.a];
+    const Particle &pb = particles[beam.b];
+
+    if (static_cast<int32_t>(pending_breaks.size()) < MAX_BREAK_EVENTS) {
+        BreakEvent event;
+        event.beam = p_beam_index;
+        event.part_a = pa.part;
+        event.part_b = pb.part;
+        event.position = (pa.position + pb.position) * real_t(0.5);
+        pending_breaks.push_back(event);
+    } else {
+        ++dropped_break_events;
+    }
+
+    if (pa.part == pb.part || parts.size() != static_cast<size_t>(MAX_PARTS)) {
+        return;
+    }
+
+    for (const int32_t part : {pa.part, pb.part}) {
+        if (part <= 0 || part >= MAX_PARTS || parts[part].detached) {
+            continue;
+        }
+
+        PartState &state = parts[part];
+        state.joints_alive = std::max(state.joints_alive - 1, int32_t(0));
+
+        if (state.joints_total > 0 && state.joints_alive == 0 &&
+            std::find(detach_queue.begin(), detach_queue.end(), part) == detach_queue.end()) {
+            detach_queue.push_back(part);
+        }
+    }
+}
+
+void SoftBodySolver3D::process_detachments() {
+    if (detach_queue.empty()) {
+        return;
+    }
+
+    for (const int32_t part : detach_queue) {
+        if (part <= 0 || part >= MAX_PARTS || parts[part].detached) {
+            continue;
+        }
+
+        real_t mass_sum = 0.0;
+        Vector3 position;
+        Vector3 velocity;
+
+        for (const Particle &particle : particles) {
+            if (particle.part != part || particle.detached || particle.inverse_mass <= real_t(0.0)) {
+                continue;
+            }
+
+            const real_t mass = real_t(1.0) / particle.inverse_mass;
+            mass_sum += mass;
+            position += particle.position * mass;
+            velocity += particle.velocity * mass;
+        }
+
+        if (mass_sum > real_t(0.0)) {
+            position /= mass_sum;
+            velocity /= mass_sum;
+        }
+
+        for (Particle &particle : particles) {
+            if (particle.part != part || particle.detached) {
+                continue;
+            }
+
+            particle.saved_inverse_mass = particle.inverse_mass;
+            particle.inverse_mass = real_t(0.0);
+            particle.velocity = Vector3();
+            particle.previous_position = particle.position;
+            particle.detached = true;
+        }
+
+        parts[part].detached = true;
+        ++detached_part_count;
+
+        DetachEvent event;
+        event.part = part;
+        event.position = position;
+        event.velocity = velocity;
+        pending_detaches.push_back(event);
+
+        stability_dirty = true;
+        diagnostics_dirty = true;
+    }
+
+    detach_queue.clear();
+}
+
+void SoftBodySolver3D::emit_pending_events() {
+    if (pending_breaks.empty() && pending_detaches.empty()) {
+        return;
+    }
+
+    std::vector<BreakEvent> breaks;
+    std::vector<DetachEvent> detaches;
+    breaks.swap(pending_breaks);
+    detaches.swap(pending_detaches);
+
+    for (const BreakEvent &event : breaks) {
+        emit_signal("beam_broken", event.beam, event.position, event.part_a, event.part_b);
+    }
+
+    for (const DetachEvent &event : detaches) {
+        emit_signal("part_detached", event.part, event.position, event.velocity);
+    }
+}
+
+void SoftBodySolver3D::set_node_part(int32_t p_node_index, int32_t p_part) {
+    if (p_node_index < 0 || p_node_index >= static_cast<int32_t>(particles.size())) {
+        return;
+    }
+
+    Particle &particle = particles[p_node_index];
+
+    if (particle.detached) {
+        return;
+    }
+
+    particle.part = std::clamp(p_part, int32_t(0), MAX_PARTS - 1);
+    parts_dirty = true;
+}
+
+void SoftBodySolver3D::set_nodes_part(const PackedInt32Array &p_node_indices, int32_t p_part) {
+    for (int64_t i = 0; i < p_node_indices.size(); ++i) {
+        set_node_part(p_node_indices[i], p_part);
+    }
+}
+
+int32_t SoftBodySolver3D::get_node_part(int32_t p_node_index) const {
+    if (p_node_index < 0 || p_node_index >= static_cast<int32_t>(particles.size())) {
+        return -1;
+    }
+
+    return particles[p_node_index].part;
+}
+
+PackedInt32Array SoftBodySolver3D::get_node_parts() const {
+    PackedInt32Array result;
+    result.resize(static_cast<int64_t>(particles.size()));
+
+    int32_t *write = result.ptrw();
+
+    for (size_t i = 0; i < particles.size(); ++i) {
+        write[i] = particles[i].part;
+    }
+
+    return result;
+}
+
+PackedInt32Array SoftBodySolver3D::get_part_nodes(int32_t p_part) const {
+    PackedInt32Array result;
+
+    for (size_t i = 0; i < particles.size(); ++i) {
+        if (particles[i].part == p_part) {
+            result.push_back(static_cast<int32_t>(i));
+        }
+    }
+
+    return result;
+}
+
+int32_t SoftBodySolver3D::get_part_count() const {
+    int32_t highest = 0;
+
+    for (const Particle &particle : particles) {
+        highest = std::max(highest, particle.part);
+    }
+
+    return particles.empty() ? 0 : highest + 1;
+}
+
+void SoftBodySolver3D::set_part_joint_strength(
+    int32_t p_part,
+    real_t p_stiffness_scale,
+    real_t p_yield_scale,
+    real_t p_break_scale
+) {
+    for (Beam &beam : beams) {
+        const int32_t part_a = particles[beam.a].part;
+        const int32_t part_b = particles[beam.b].part;
+
+        if (part_a == part_b || (part_a != p_part && part_b != p_part)) {
+            continue;
+        }
+
+        beam.stiffness_scale = std::max(p_stiffness_scale, real_t(0.001));
+        beam.yield_scale = std::max(p_yield_scale, real_t(0.001));
+        beam.break_scale = std::max(p_break_scale, real_t(0.001));
+        beam.compliance = real_t(1.0) / std::max(beam_stiffness * beam.stiffness_scale, real_t(1.0));
+    }
+
+    stability_dirty = true;
+}
+
+real_t SoftBodySolver3D::get_part_attachment(int32_t p_part) const {
+    if (p_part < 0 || p_part >= MAX_PARTS || parts.size() != static_cast<size_t>(MAX_PARTS)) {
+        return real_t(1.0);
+    }
+
+    const PartState &state = parts[p_part];
+
+    if (state.detached) {
+        return real_t(0.0);
+    }
+
+    if (state.joints_total <= 0) {
+        return real_t(1.0);
+    }
+
+    return static_cast<real_t>(state.joints_alive) / static_cast<real_t>(state.joints_total);
+}
+
+real_t SoftBodySolver3D::get_part_damage(int32_t p_part) const {
+    const PackedFloat32Array damage = get_node_damage();
+    const float *read = damage.ptr();
+
+    real_t sum = 0.0;
+    int32_t count = 0;
+
+    for (size_t i = 0; i < particles.size(); ++i) {
+        if (particles[i].part == p_part) {
+            sum += read[i];
+            ++count;
+        }
+    }
+
+    return count > 0 ? sum / static_cast<real_t>(count) : real_t(0.0);
+}
+
+bool SoftBodySolver3D::is_part_detached(int32_t p_part) const {
+    if (p_part < 0 || p_part >= MAX_PARTS || parts.size() != static_cast<size_t>(MAX_PARTS)) {
+        return false;
+    }
+
+    return parts[p_part].detached;
+}
+
+int32_t SoftBodySolver3D::get_detached_part_count() const {
+    return detached_part_count;
 }

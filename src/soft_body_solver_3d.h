@@ -26,6 +26,9 @@ private:
         Vector3 velocity;
         Vector3 rest_position;
         real_t inverse_mass = 1.0;
+        real_t saved_inverse_mass = 1.0;
+        int32_t part = 0;
+        bool detached = false;
     };
 
     struct Beam {
@@ -42,6 +45,26 @@ private:
         real_t plastic_scale = 1.0;
         uint8_t overload = 0;
         bool broken = false;
+    };
+
+    struct BreakEvent {
+        int32_t beam = 0;
+        int32_t part_a = 0;
+        int32_t part_b = 0;
+        Vector3 position;
+    };
+
+    struct DetachEvent {
+        int32_t part = 0;
+        Vector3 position;
+        Vector3 velocity;
+    };
+
+    struct PartState {
+        int32_t node_count = 0;
+        int32_t joints_total = 0;
+        int32_t joints_alive = 0;
+        bool detached = false;
     };
 
     struct Diagnostics {
@@ -65,6 +88,8 @@ private:
     static constexpr int32_t MAX_BEAMS = 16384;
     static constexpr int32_t MAX_TICKS_PER_FRAME = 4;
     static constexpr int32_t MIN_ACTIVE_SUBSTEPS = 2;
+    static constexpr int32_t MAX_PARTS = 64;
+    static constexpr int32_t MAX_BREAK_EVENTS = 64;
 
     std::vector<Particle> particles;
     std::vector<Beam> beams;
@@ -72,6 +97,13 @@ private:
     std::vector<Vector3> good_velocity;
     std::vector<std::pair<real_t, int32_t>> scratch_order;
     std::vector<real_t> scratch_weights;
+    std::vector<PartState> parts;
+    std::vector<BreakEvent> pending_breaks;
+    std::vector<DetachEvent> pending_detaches;
+    std::vector<int32_t> detach_queue;
+    bool parts_dirty = true;
+    int32_t detached_part_count = 0;
+    int32_t dropped_break_events = 0;
 
     Vector3 gravity = Vector3(0.0, -9.81, 0.0);
     real_t fixed_step = real_t(1.0 / 60.0);
@@ -148,6 +180,11 @@ private:
     void update_crash();
     void remove_mean_velocity();
 
+    void rebuild_parts();
+    void register_break(int32_t beam_index);
+    void process_detachments();
+    void emit_pending_events();
+
     void refresh_compliance();
     void compute_stability();
     void enter_sleep();
@@ -193,6 +230,23 @@ public:
         real_t plastic_scale
     );
     void finish_build();
+
+    void set_node_part(int32_t node_index, int32_t part);
+    void set_nodes_part(const PackedInt32Array &node_indices, int32_t part);
+    int32_t get_node_part(int32_t node_index) const;
+    PackedInt32Array get_node_parts() const;
+    PackedInt32Array get_part_nodes(int32_t part) const;
+    int32_t get_part_count() const;
+    void set_part_joint_strength(
+        int32_t part,
+        real_t stiffness_scale,
+        real_t yield_scale,
+        real_t break_scale
+    );
+    real_t get_part_attachment(int32_t part) const;
+    real_t get_part_damage(int32_t part) const;
+    bool is_part_detached(int32_t part) const;
+    int32_t get_detached_part_count() const;
 
     void set_node_mass(int32_t node_index, real_t mass);
     real_t get_node_mass(int32_t node_index) const;
