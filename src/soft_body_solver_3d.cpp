@@ -1,8 +1,10 @@
 #include "soft_body_solver_3d.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/core/class_db.hpp>
@@ -275,6 +277,86 @@ void SoftBodySolver3D::_bind_methods() {
         &SoftBodySolver3D::get_yielded_beam_count
     );
 
+    ClassDB::bind_method(
+        D_METHOD("add_plane_collider", "point", "normal", "extent", "friction", "life"),
+        &SoftBodySolver3D::add_plane_collider,
+        DEFVAL(0.0), DEFVAL(0.3), DEFVAL(0.1)
+    );
+    ClassDB::bind_method(
+        D_METHOD("add_sphere_collider", "center", "radius", "friction", "life"),
+        &SoftBodySolver3D::add_sphere_collider,
+        DEFVAL(0.3), DEFVAL(0.1)
+    );
+    ClassDB::bind_method(
+        D_METHOD("add_capsule_collider", "from", "to", "radius", "friction", "life"),
+        &SoftBodySolver3D::add_capsule_collider,
+        DEFVAL(0.3), DEFVAL(0.1)
+    );
+    ClassDB::bind_method(
+        D_METHOD("add_box_collider", "center", "orientation", "half_extents", "friction", "life"),
+        &SoftBodySolver3D::add_box_collider,
+        DEFVAL(0.3), DEFVAL(0.1)
+    );
+    ClassDB::bind_method(
+        D_METHOD("update_collider", "id", "position", "orientation", "velocity"),
+        &SoftBodySolver3D::update_collider
+    );
+    ClassDB::bind_method(D_METHOD("remove_collider", "id"), &SoftBodySolver3D::remove_collider);
+    ClassDB::bind_method(D_METHOD("clear_colliders"), &SoftBodySolver3D::clear_colliders);
+    ClassDB::bind_method(D_METHOD("get_collider_count"), &SoftBodySolver3D::get_collider_count);
+    ClassDB::bind_method(D_METHOD("get_collider_force", "id"), &SoftBodySolver3D::get_collider_force);
+    ClassDB::bind_method(D_METHOD("get_contact_count"), &SoftBodySolver3D::get_contact_count);
+    ClassDB::bind_method(D_METHOD("get_contact_force"), &SoftBodySolver3D::get_contact_force);
+    ClassDB::bind_method(D_METHOD("get_contact_peak_force"), &SoftBodySolver3D::get_contact_peak_force);
+
+    ClassDB::bind_method(
+        D_METHOD("add_collision_triangle", "a", "b", "c"),
+        &SoftBodySolver3D::add_collision_triangle
+    );
+    ClassDB::bind_method(
+        D_METHOD("set_collision_triangles", "indices"),
+        &SoftBodySolver3D::set_collision_triangles
+    );
+    ClassDB::bind_method(
+        D_METHOD("build_skin_from_mesh", "vertices", "indices"),
+        &SoftBodySolver3D::build_skin_from_mesh
+    );
+    ClassDB::bind_method(D_METHOD("clear_collision_triangles"), &SoftBodySolver3D::clear_collision_triangles);
+    ClassDB::bind_method(
+        D_METHOD("get_collision_triangle_count"),
+        &SoftBodySolver3D::get_collision_triangle_count
+    );
+    ClassDB::bind_method(D_METHOD("get_self_contact_count"), &SoftBodySolver3D::get_self_contact_count);
+
+    ClassDB::bind_method(D_METHOD("set_self_collision", "value"), &SoftBodySolver3D::set_self_collision);
+    ClassDB::bind_method(D_METHOD("get_self_collision"), &SoftBodySolver3D::get_self_collision);
+    ClassDB::bind_method(
+        D_METHOD("set_self_collision_radius", "value"),
+        &SoftBodySolver3D::set_self_collision_radius
+    );
+    ClassDB::bind_method(
+        D_METHOD("get_self_collision_radius"),
+        &SoftBodySolver3D::get_self_collision_radius
+    );
+    ClassDB::bind_method(
+        D_METHOD("set_self_collision_thickness", "value"),
+        &SoftBodySolver3D::set_self_collision_thickness
+    );
+    ClassDB::bind_method(
+        D_METHOD("get_self_collision_thickness"),
+        &SoftBodySolver3D::get_self_collision_thickness
+    );
+    ClassDB::bind_method(
+        D_METHOD("set_self_collision_friction", "value"),
+        &SoftBodySolver3D::set_self_collision_friction
+    );
+    ClassDB::bind_method(
+        D_METHOD("get_self_collision_friction"),
+        &SoftBodySolver3D::get_self_collision_friction
+    );
+    ClassDB::bind_method(D_METHOD("set_contact_margin", "value"), &SoftBodySolver3D::set_contact_margin);
+    ClassDB::bind_method(D_METHOD("get_contact_margin"), &SoftBodySolver3D::get_contact_margin);
+
     ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "gravity"), "set_gravity", "get_gravity");
 
     ADD_PROPERTY(
@@ -385,6 +467,27 @@ void SoftBodySolver3D::_bind_methods() {
         "set_crash_release_speed",
         "get_crash_release_speed"
     );
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "self_collision"), "set_self_collision", "get_self_collision");
+    ADD_PROPERTY(
+        PropertyInfo(Variant::FLOAT, "self_collision_radius", PROPERTY_HINT_RANGE, "0,1,0.001"),
+        "set_self_collision_radius",
+        "get_self_collision_radius"
+    );
+    ADD_PROPERTY(
+        PropertyInfo(Variant::FLOAT, "self_collision_thickness", PROPERTY_HINT_RANGE, "0.001,0.5,0.001"),
+        "set_self_collision_thickness",
+        "get_self_collision_thickness"
+    );
+    ADD_PROPERTY(
+        PropertyInfo(Variant::FLOAT, "self_collision_friction", PROPERTY_HINT_RANGE, "0,2,0.01"),
+        "set_self_collision_friction",
+        "get_self_collision_friction"
+    );
+    ADD_PROPERTY(
+        PropertyInfo(Variant::FLOAT, "contact_margin", PROPERTY_HINT_RANGE, "0,0.5,0.001"),
+        "set_contact_margin",
+        "get_contact_margin"
+    );
 }
 
 void SoftBodySolver3D::clear_data() {
@@ -421,6 +524,24 @@ void SoftBodySolver3D::clear_data() {
     crash_time_left = 0.0;
     plastic_timer = 0.0;
     plastic_allowed = false;
+    colliders.clear();
+    contact_count = 0;
+    tick_contact_depth = 0.0;
+    contact_peak_force = 0.0;
+    tick_contact_impulse = Vector3();
+    contact_force = Vector3();
+    skin.clear();
+    node_pairs.clear();
+    triangle_pairs.clear();
+    hash_node_head.clear();
+    hash_node_next.clear();
+    hash_triangle_head.clear();
+    hash_triangle_entries.clear();
+    triangle_mark.clear();
+    mark_counter = 0;
+    self_contact_count = 0;
+    self_overflow = 0;
+    auto_self_radius = 0.0;
     frame_rotation = Quaternion();
     diagnostics = Diagnostics();
     diagnostics_dirty = true;
@@ -620,6 +741,7 @@ void SoftBodySolver3D::finish_build() {
 
     good_position.resize(particles.size());
     good_velocity.resize(particles.size());
+    auto_self_radius = 0.0;
 
     rebuild_parts();
 
@@ -722,6 +844,30 @@ void SoftBodySolver3D::create_box(
                 link(x, y, z, 0, 2, 0, real_t(0.18));
                 link(x, y, z, 0, 0, 2, real_t(0.18));
             }
+        }
+    }
+
+    auto face = [&](int32_t a, int32_t b, int32_t c, int32_t d) {
+        add_collision_triangle(a, b, c);
+        add_collision_triangle(a, c, d);
+    };
+
+    for (int32_t y = 0; y + 1 < ny; ++y) {
+        for (int32_t x = 0; x + 1 < nx; ++x) {
+            face(index(x, y, 0), index(x + 1, y, 0), index(x + 1, y + 1, 0), index(x, y + 1, 0));
+            face(index(x, y, nz - 1), index(x + 1, y, nz - 1), index(x + 1, y + 1, nz - 1), index(x, y + 1, nz - 1));
+        }
+    }
+    for (int32_t z = 0; z + 1 < nz; ++z) {
+        for (int32_t x = 0; x + 1 < nx; ++x) {
+            face(index(x, 0, z), index(x + 1, 0, z), index(x + 1, 0, z + 1), index(x, 0, z + 1));
+            face(index(x, ny - 1, z), index(x + 1, ny - 1, z), index(x + 1, ny - 1, z + 1), index(x, ny - 1, z + 1));
+        }
+    }
+    for (int32_t z = 0; z + 1 < nz; ++z) {
+        for (int32_t y = 0; y + 1 < ny; ++y) {
+            face(index(0, y, z), index(0, y + 1, z), index(0, y + 1, z + 1), index(0, y, z + 1));
+            face(index(nx - 1, y, z), index(nx - 1, y + 1, z), index(nx - 1, y + 1, z + 1), index(nx - 1, y, z + 1));
         }
     }
 
@@ -1031,6 +1177,12 @@ void SoftBodySolver3D::reset_to_rest() {
     wall_force = Vector3();
     wall_impulse_total = Vector3();
     wall_peak_force = 0.0;
+    contact_count = 0;
+    contact_peak_force = 0.0;
+    contact_force = Vector3();
+    tick_contact_impulse = Vector3();
+    self_contact_count = 0;
+    self_overflow = 0;
     crash_active = false;
     crash_time_left = 0.0;
     plastic_timer = 0.0;
@@ -1388,6 +1540,746 @@ real_t SoftBodySolver3D::get_time_budget_us() const {
     return time_budget_us;
 }
 
+namespace {
+
+constexpr int32_t kNoIndex = -1;
+
+Vector3 closest_on_triangle(
+    const Vector3 &p,
+    const Vector3 &a,
+    const Vector3 &b,
+    const Vector3 &c,
+    real_t &u,
+    real_t &v,
+    real_t &w,
+    bool &interior
+) {
+    interior = false;
+
+    const Vector3 ab = b - a;
+    const Vector3 ac = c - a;
+    const Vector3 ap = p - a;
+    const real_t d1 = ab.dot(ap);
+    const real_t d2 = ac.dot(ap);
+
+    if (d1 <= real_t(0.0) && d2 <= real_t(0.0)) {
+        u = 1.0; v = 0.0; w = 0.0;
+        return a;
+    }
+
+    const Vector3 bp = p - b;
+    const real_t d3 = ab.dot(bp);
+    const real_t d4 = ac.dot(bp);
+
+    if (d3 >= real_t(0.0) && d4 <= d3) {
+        u = 0.0; v = 1.0; w = 0.0;
+        return b;
+    }
+
+    const real_t vc = d1 * d4 - d3 * d2;
+
+    if (vc <= real_t(0.0) && d1 >= real_t(0.0) && d3 <= real_t(0.0)) {
+        const real_t t = d1 / (d1 - d3);
+        u = real_t(1.0) - t; v = t; w = 0.0;
+        return a + ab * t;
+    }
+
+    const Vector3 cp = p - c;
+    const real_t d5 = ab.dot(cp);
+    const real_t d6 = ac.dot(cp);
+
+    if (d6 >= real_t(0.0) && d5 <= d6) {
+        u = 0.0; v = 0.0; w = 1.0;
+        return c;
+    }
+
+    const real_t vb = d5 * d2 - d1 * d6;
+
+    if (vb <= real_t(0.0) && d2 >= real_t(0.0) && d6 <= real_t(0.0)) {
+        const real_t t = d2 / (d2 - d6);
+        u = real_t(1.0) - t; v = 0.0; w = t;
+        return a + ac * t;
+    }
+
+    const real_t va = d3 * d6 - d5 * d4;
+
+    if (va <= real_t(0.0) && (d4 - d3) >= real_t(0.0) && (d5 - d6) >= real_t(0.0)) {
+        const real_t t = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        u = 0.0; v = real_t(1.0) - t; w = t;
+        return b + (c - b) * t;
+    }
+
+    const real_t sum = va + vb + vc;
+
+    if (std::abs(sum) < real_t(1.0e-20)) {
+        u = 1.0; v = 0.0; w = 0.0;
+        return a;
+    }
+
+    const real_t denominator = real_t(1.0) / sum;
+    v = vb * denominator;
+    w = vc * denominator;
+    u = real_t(1.0) - v - w;
+    interior = true;
+    return a + ab * v + ac * w;
+}
+
+inline int32_t hash_bucket(int32_t x, int32_t y, int32_t z, int32_t size) {
+    const uint32_t h = (static_cast<uint32_t>(x) * 73856093u) ^
+        (static_cast<uint32_t>(y) * 19349663u) ^
+        (static_cast<uint32_t>(z) * 83492791u);
+    return static_cast<int32_t>(h & static_cast<uint32_t>(size - 1));
+}
+
+}
+
+SoftBodySolver3D::Collider *SoftBodySolver3D::find_collider(int32_t p_id) {
+    for (Collider &collider : colliders) {
+        if (collider.id == p_id) {
+            return &collider;
+        }
+    }
+
+    return nullptr;
+}
+
+int32_t SoftBodySolver3D::push_collider(Collider p_collider) {
+    if (static_cast<int32_t>(colliders.size()) >= MAX_COLLIDERS) {
+        return -1;
+    }
+
+    p_collider.id = next_collider_id++;
+    p_collider.friction = std::clamp(p_collider.friction, real_t(0.0), real_t(2.0));
+    p_collider.life = std::max(p_collider.life, real_t(0.0));
+    colliders.push_back(p_collider);
+
+    if (sleeping && collider_touches_body(colliders.back())) {
+        wake();
+    }
+
+    return colliders.back().id;
+}
+
+bool SoftBodySolver3D::collide_point(
+    const Collider &p_collider,
+    const Vector3 &p_point,
+    Vector3 &r_normal,
+    real_t &r_depth
+) const {
+    switch (p_collider.type) {
+        case COLLIDER_PLANE: {
+            const Vector3 normal = p_collider.basis.xform(p_collider.local_normal);
+            const Vector3 relative = p_point - p_collider.position;
+            const real_t height = relative.dot(normal);
+            const real_t depth = contact_margin - height;
+
+            if (depth <= real_t(0.0)) {
+                return false;
+            }
+
+            if (p_collider.radius > real_t(0.0)) {
+                const Vector3 lateral = relative - normal * height;
+
+                if (lateral.length_squared() > p_collider.radius * p_collider.radius) {
+                    return false;
+                }
+            }
+
+            r_normal = normal;
+            r_depth = depth;
+            return true;
+        }
+
+        case COLLIDER_SPHERE:
+        case COLLIDER_CAPSULE: {
+            Vector3 center = p_collider.position;
+
+            if (p_collider.type == COLLIDER_CAPSULE) {
+                const Vector3 segment = p_collider.basis.xform(p_collider.local_segment);
+                const real_t length_squared = segment.length_squared();
+
+                if (length_squared > real_t(1.0e-12)) {
+                    const real_t t = std::clamp(
+                        (p_point - p_collider.position).dot(segment) / length_squared,
+                        real_t(0.0),
+                        real_t(1.0)
+                    );
+                    center = p_collider.position + segment * t;
+                }
+            }
+
+            const real_t reach = p_collider.radius + contact_margin;
+            const Vector3 offset = p_point - center;
+            const real_t distance_squared = offset.length_squared();
+
+            if (distance_squared >= reach * reach || distance_squared < real_t(1.0e-14)) {
+                return false;
+            }
+
+            const real_t distance = std::sqrt(distance_squared);
+            r_normal = offset / distance;
+            r_depth = reach - distance;
+            return true;
+        }
+
+        case COLLIDER_BOX: {
+            const Vector3 &e = p_collider.extents;
+            const Vector3 q = p_collider.basis.xform_inv(p_point - p_collider.position);
+            const Vector3 clamped(
+                std::clamp(q.x, -e.x, e.x),
+                std::clamp(q.y, -e.y, e.y),
+                std::clamp(q.z, -e.z, e.z)
+            );
+            const Vector3 outside = q - clamped;
+            const real_t outside_squared = outside.length_squared();
+
+            if (outside_squared > real_t(1.0e-12)) {
+                const real_t distance = std::sqrt(outside_squared);
+
+                if (distance >= contact_margin) {
+                    return false;
+                }
+
+                r_normal = p_collider.basis.xform(outside / distance);
+                r_depth = contact_margin - distance;
+                return true;
+            }
+
+            const real_t px = e.x - std::abs(q.x);
+            const real_t py = e.y - std::abs(q.y);
+            const real_t pz = e.z - std::abs(q.z);
+            Vector3 axis;
+            real_t penetration = 0.0;
+
+            if (px <= py && px <= pz) {
+                axis = Vector3(q.x >= real_t(0.0) ? real_t(1.0) : real_t(-1.0), 0.0, 0.0);
+                penetration = px;
+            } else if (py <= pz) {
+                axis = Vector3(0.0, q.y >= real_t(0.0) ? real_t(1.0) : real_t(-1.0), 0.0);
+                penetration = py;
+            } else {
+                axis = Vector3(0.0, 0.0, q.z >= real_t(0.0) ? real_t(1.0) : real_t(-1.0));
+                penetration = pz;
+            }
+
+            r_normal = p_collider.basis.xform(axis);
+            r_depth = penetration + contact_margin;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool SoftBodySolver3D::collider_touches_body(const Collider &p_collider) const {
+    Vector3 normal;
+    real_t depth = 0.0;
+
+    for (const Particle &particle : particles) {
+        if (particle.inverse_mass > real_t(0.0) &&
+            collide_point(p_collider, particle.position, normal, depth)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void SoftBodySolver3D::solve_colliders(real_t h) {
+    const real_t inv_h = real_t(1.0) / h;
+    int32_t contacts = 0;
+
+    for (Collider &collider : colliders) {
+        for (Particle &particle : particles) {
+            if (particle.inverse_mass <= real_t(0.0)) {
+                continue;
+            }
+
+            Vector3 normal;
+            real_t depth = 0.0;
+
+            if (!collide_point(collider, particle.position, normal, depth)) {
+                continue;
+            }
+
+            ++contacts;
+            tick_contact_depth = std::max(tick_contact_depth, depth);
+
+            Vector3 correction = normal * depth;
+
+            if (collider.friction > real_t(0.0)) {
+                const Vector3 move =
+                    (particle.position - particle.previous_position) - collider.velocity * h;
+                const Vector3 tangent = move - normal * move.dot(normal);
+                const real_t tangent_length = tangent.length();
+
+                if (tangent_length > real_t(1.0e-9)) {
+                    const real_t factor =
+                        std::min(real_t(1.0), collider.friction * depth / tangent_length);
+                    correction -= tangent * factor;
+                }
+            }
+
+            particle.position += correction;
+
+            const Vector3 impulse = correction * (inv_h / particle.inverse_mass);
+            collider.tick_impulse += impulse;
+            tick_contact_impulse += impulse;
+        }
+    }
+
+    contact_count = contacts;
+}
+
+void SoftBodySolver3D::age_colliders() {
+    for (Collider &collider : colliders) {
+        collider.impulse = collider.tick_impulse;
+
+        if (collider.life > real_t(0.0)) {
+            collider.life -= fixed_step;
+
+            if (collider.life <= real_t(0.0)) {
+                collider.life = real_t(-1.0);
+            }
+        }
+    }
+
+    colliders.erase(
+        std::remove_if(colliders.begin(), colliders.end(),
+            [](const Collider &c) { return c.life < real_t(0.0); }),
+        colliders.end()
+    );
+
+    if (colliders.empty()) {
+        contact_count = 0;
+    }
+}
+
+real_t SoftBodySolver3D::self_radius() {
+    if (self_collision_radius > real_t(0.0)) {
+        return self_collision_radius;
+    }
+
+    if (auto_self_radius <= real_t(0.0)) {
+        std::vector<real_t> shortest(particles.size(), real_t(0.0));
+
+        for (const Beam &beam : beams) {
+            for (const int32_t node : {beam.a, beam.b}) {
+                if (shortest[node] <= real_t(0.0) || beam.initial_rest_length < shortest[node]) {
+                    shortest[node] = beam.initial_rest_length;
+                }
+            }
+        }
+
+        real_t sum = 0.0;
+        int32_t count = 0;
+
+        for (const real_t value : shortest) {
+            if (value > real_t(0.0)) {
+                sum += value;
+                ++count;
+            }
+        }
+
+        auto_self_radius = count > 0 ? real_t(0.25) * sum / real_t(count) : real_t(0.05);
+    }
+
+    return auto_self_radius;
+}
+
+void SoftBodySolver3D::build_self_contacts(real_t p_travel) {
+    node_pairs.clear();
+    triangle_pairs.clear();
+
+    const int32_t count = static_cast<int32_t>(particles.size());
+
+    if (count < 2) {
+        return;
+    }
+
+    const real_t radius = self_radius();
+    const real_t thickness = self_collision_thickness;
+    const real_t node_reach = real_t(2.0) * radius + real_t(2.0) * p_travel;
+    const real_t triangle_reach = thickness + real_t(2.0) * p_travel;
+    const real_t cell = std::max(std::max(node_reach, triangle_reach), real_t(0.02));
+    const real_t inv_cell = real_t(1.0) / cell;
+    const real_t node_reach_sq = node_reach * node_reach;
+    const real_t triangle_reach_sq = triangle_reach * triangle_reach;
+    const real_t exclusion = real_t(6.0) * radius;
+    const real_t exclusion_sq = exclusion * exclusion;
+    const real_t rest_clearance = real_t(2.0) * thickness;
+    const real_t rest_clearance_sq = rest_clearance * rest_clearance;
+
+    auto cell_of = [inv_cell](real_t value) {
+        return static_cast<int32_t>(std::floor(
+            std::clamp(value * inv_cell, real_t(-1.0e6), real_t(1.0e6))
+        ));
+    };
+
+    hash_node_head.assign(SELF_HASH_SIZE, kNoIndex);
+    hash_triangle_head.assign(SELF_HASH_SIZE, kNoIndex);
+    hash_node_next.assign(static_cast<size_t>(count), kNoIndex);
+    hash_triangle_entries.clear();
+
+    for (int32_t i = 0; i < count; ++i) {
+        const Particle &particle = particles[i];
+
+        if (particle.detached) {
+            continue;
+        }
+
+        const int32_t bucket = hash_bucket(
+            cell_of(particle.position.x), cell_of(particle.position.y),
+            cell_of(particle.position.z), SELF_HASH_SIZE
+        );
+        hash_node_next[i] = hash_node_head[bucket];
+        hash_node_head[bucket] = i;
+    }
+
+    const int32_t pair_cap = MAX_SELF_PAIRS;
+    int32_t buckets[27];
+
+    for (int32_t i = 0; i < count && static_cast<int32_t>(node_pairs.size()) < pair_cap; ++i) {
+        const Particle &pi = particles[i];
+
+        if (pi.detached) {
+            continue;
+        }
+
+        const int32_t cx = cell_of(pi.position.x);
+        const int32_t cy = cell_of(pi.position.y);
+        const int32_t cz = cell_of(pi.position.z);
+        int32_t bucket_count = 0;
+
+        for (int32_t dx = -1; dx <= 1; ++dx) {
+            for (int32_t dy = -1; dy <= 1; ++dy) {
+                for (int32_t dz = -1; dz <= 1; ++dz) {
+                    const int32_t bucket = hash_bucket(cx + dx, cy + dy, cz + dz, SELF_HASH_SIZE);
+                    bool known = false;
+
+                    for (int32_t k = 0; k < bucket_count; ++k) {
+                        if (buckets[k] == bucket) {
+                            known = true;
+                            break;
+                        }
+                    }
+
+                    if (!known) {
+                        buckets[bucket_count++] = bucket;
+                    }
+                }
+            }
+        }
+
+        for (int32_t k = 0; k < bucket_count; ++k) {
+            for (int32_t j = hash_node_head[buckets[k]]; j != kNoIndex; j = hash_node_next[j]) {
+                if (j <= i) {
+                    continue;
+                }
+
+                const Particle &pj = particles[j];
+
+                if (pi.inverse_mass <= real_t(0.0) && pj.inverse_mass <= real_t(0.0)) {
+                    continue;
+                }
+
+                if ((pj.position - pi.position).length_squared() > node_reach_sq) {
+                    continue;
+                }
+
+                if ((pj.rest_position - pi.rest_position).length_squared() < exclusion_sq) {
+                    continue;
+                }
+
+                if (static_cast<int32_t>(node_pairs.size()) >= pair_cap) {
+                    ++self_overflow;
+                    break;
+                }
+
+                node_pairs.push_back({i, j});
+            }
+        }
+    }
+
+    const int32_t skin_count = static_cast<int32_t>(skin.size());
+
+    if (skin_count == 0) {
+        return;
+    }
+
+    for (int32_t t = 0; t < skin_count; ++t) {
+        const SkinTriangle &tri = skin[t];
+        const Particle &pa = particles[tri.a];
+        const Particle &pb = particles[tri.b];
+        const Particle &pc = particles[tri.c];
+
+        if (pa.detached || pb.detached || pc.detached) {
+            continue;
+        }
+
+        const Vector3 low(
+            std::min(pa.position.x, std::min(pb.position.x, pc.position.x)) - triangle_reach,
+            std::min(pa.position.y, std::min(pb.position.y, pc.position.y)) - triangle_reach,
+            std::min(pa.position.z, std::min(pb.position.z, pc.position.z)) - triangle_reach
+        );
+        const Vector3 high(
+            std::max(pa.position.x, std::max(pb.position.x, pc.position.x)) + triangle_reach,
+            std::max(pa.position.y, std::max(pb.position.y, pc.position.y)) + triangle_reach,
+            std::max(pa.position.z, std::max(pb.position.z, pc.position.z)) + triangle_reach
+        );
+
+        const int32_t x0 = cell_of(low.x), x1 = cell_of(high.x);
+        const int32_t y0 = cell_of(low.y), y1 = cell_of(high.y);
+        const int32_t z0 = cell_of(low.z), z1 = cell_of(high.z);
+        const int64_t cells = int64_t(x1 - x0 + 1) * int64_t(y1 - y0 + 1) * int64_t(z1 - z0 + 1);
+
+        if (cells > 125) {
+            ++self_overflow;
+            continue;
+        }
+
+        for (int32_t x = x0; x <= x1; ++x) {
+            for (int32_t y = y0; y <= y1; ++y) {
+                for (int32_t z = z0; z <= z1; ++z) {
+                    const int32_t bucket = hash_bucket(x, y, z, SELF_HASH_SIZE);
+                    TriEntry entry;
+                    entry.triangle = t;
+                    entry.next = hash_triangle_head[bucket];
+                    hash_triangle_head[bucket] = static_cast<int32_t>(hash_triangle_entries.size());
+                    hash_triangle_entries.push_back(entry);
+                }
+            }
+        }
+    }
+
+    if (static_cast<int32_t>(triangle_mark.size()) != skin_count) {
+        triangle_mark.assign(static_cast<size_t>(skin_count), 0);
+        mark_counter = 0;
+    }
+
+    for (int32_t i = 0; i < count && static_cast<int32_t>(triangle_pairs.size()) < pair_cap; ++i) {
+        const Particle &pn = particles[i];
+
+        if (pn.detached) {
+            continue;
+        }
+
+        if (mark_counter > 2000000000) {
+            std::fill(triangle_mark.begin(), triangle_mark.end(), 0);
+            mark_counter = 0;
+        }
+        const int32_t mark = ++mark_counter;
+
+        const int32_t bucket = hash_bucket(
+            cell_of(pn.position.x), cell_of(pn.position.y), cell_of(pn.position.z), SELF_HASH_SIZE
+        );
+
+        for (int32_t e = hash_triangle_head[bucket]; e != kNoIndex; e = hash_triangle_entries[e].next) {
+            const int32_t t = hash_triangle_entries[e].triangle;
+
+            if (triangle_mark[t] == mark) {
+                continue;
+            }
+            triangle_mark[t] = mark;
+
+            const SkinTriangle &tri = skin[t];
+
+            if (tri.a == i || tri.b == i || tri.c == i) {
+                continue;
+            }
+
+            const Particle &pa = particles[tri.a];
+            const Particle &pb = particles[tri.b];
+            const Particle &pc = particles[tri.c];
+
+            if (pn.inverse_mass <= real_t(0.0) && pa.inverse_mass <= real_t(0.0) &&
+                pb.inverse_mass <= real_t(0.0) && pc.inverse_mass <= real_t(0.0)) {
+                continue;
+            }
+
+            real_t u, v, w;
+            bool interior = false;
+            const Vector3 near_point = closest_on_triangle(
+                pn.position, pa.position, pb.position, pc.position, u, v, w, interior
+            );
+
+            if ((pn.position - near_point).length_squared() > triangle_reach_sq) {
+                continue;
+            }
+
+            const Vector3 rest_point = closest_on_triangle(
+                pn.rest_position, pa.rest_position, pb.rest_position, pc.rest_position,
+                u, v, w, interior
+            );
+
+            if ((pn.rest_position - rest_point).length_squared() < rest_clearance_sq) {
+                continue;
+            }
+
+            if (static_cast<int32_t>(triangle_pairs.size()) >= pair_cap) {
+                ++self_overflow;
+                break;
+            }
+
+            triangle_pairs.push_back({i, t});
+        }
+    }
+}
+
+void SoftBodySolver3D::solve_self_collision(real_t h) {
+    const real_t min_distance = real_t(2.0) * self_radius();
+    const real_t thickness = self_collision_thickness;
+    const real_t friction = self_collision_friction;
+    int32_t contacts = 0;
+
+    for (const SelfPair &pair : node_pairs) {
+        Particle &pi = particles[pair.node];
+        Particle &pj = particles[pair.other];
+
+        const real_t w_sum = pi.inverse_mass + pj.inverse_mass;
+
+        if (w_sum <= real_t(0.0)) {
+            continue;
+        }
+
+        const Vector3 delta = pj.position - pi.position;
+        const real_t distance_squared = delta.length_squared();
+
+        if (distance_squared >= min_distance * min_distance || distance_squared < real_t(1.0e-14)) {
+            continue;
+        }
+
+        const real_t distance = std::sqrt(distance_squared);
+        const Vector3 normal = delta / distance;
+        const real_t depth = min_distance - distance;
+        const real_t lambda = depth / w_sum;
+
+        pi.position -= normal * (lambda * pi.inverse_mass);
+        pj.position += normal * (lambda * pj.inverse_mass);
+        ++contacts;
+
+        if (friction > real_t(0.0)) {
+            const Vector3 relative =
+                (pj.position - pj.previous_position) - (pi.position - pi.previous_position);
+            const Vector3 tangent = relative - normal * relative.dot(normal);
+            const real_t tangent_length = tangent.length();
+
+            if (tangent_length > real_t(1.0e-9)) {
+                const real_t slide = std::min(tangent_length, friction * depth) / w_sum;
+                const Vector3 direction = tangent / tangent_length;
+
+                pi.position += direction * (slide * pi.inverse_mass);
+                pj.position -= direction * (slide * pj.inverse_mass);
+            }
+        }
+    }
+
+    for (const SelfPair &pair : triangle_pairs) {
+        Particle &pn = particles[pair.node];
+        const SkinTriangle &tri = skin[pair.other];
+        Particle &pa = particles[tri.a];
+        Particle &pb = particles[tri.b];
+        Particle &pc = particles[tri.c];
+
+        real_t u, v, w;
+        bool interior = false;
+        const Vector3 near_point = closest_on_triangle(
+            pn.position, pa.position, pb.position, pc.position, u, v, w, interior
+        );
+
+        Vector3 normal;
+        real_t depth = 0.0;
+
+        if (interior) {
+            Vector3 face = (pb.position - pa.position).cross(pc.position - pa.position);
+            const real_t face_length = face.length();
+
+            if (face_length < real_t(1.0e-12)) {
+                continue;
+            }
+            face /= face_length;
+
+            const real_t height = (pn.position - pa.position).dot(face);
+            real_t side = height >= real_t(0.0) ? real_t(1.0) : real_t(-1.0);
+
+            Vector3 previous_face = (pb.previous_position - pa.previous_position)
+                .cross(pc.previous_position - pa.previous_position);
+            const real_t previous_length = previous_face.length();
+
+            if (previous_length > real_t(1.0e-12)) {
+                previous_face /= previous_length;
+
+                if (previous_face.dot(face) < real_t(0.0)) {
+                    previous_face = -previous_face;
+                }
+
+                const real_t previous_height =
+                    (pn.previous_position - pa.previous_position).dot(previous_face);
+
+                if (std::abs(previous_height) > real_t(1.0e-6)) {
+                    side = previous_height >= real_t(0.0) ? real_t(1.0) : real_t(-1.0);
+                }
+            }
+
+            depth = thickness - side * height;
+            normal = face * side;
+        } else {
+            const Vector3 offset = pn.position - near_point;
+            const real_t distance_squared = offset.length_squared();
+
+            if (distance_squared < real_t(1.0e-14)) {
+                continue;
+            }
+
+            const real_t distance = std::sqrt(distance_squared);
+            depth = thickness - distance;
+            normal = offset / distance;
+        }
+
+        if (depth <= real_t(0.0)) {
+            continue;
+        }
+
+        const real_t denominator = pn.inverse_mass + u * u * pa.inverse_mass +
+            v * v * pb.inverse_mass + w * w * pc.inverse_mass;
+
+        if (denominator < real_t(1.0e-12)) {
+            continue;
+        }
+
+        const real_t lambda = depth / denominator;
+
+        pn.position += normal * (lambda * pn.inverse_mass);
+        pa.position -= normal * (lambda * u * pa.inverse_mass);
+        pb.position -= normal * (lambda * v * pb.inverse_mass);
+        pc.position -= normal * (lambda * w * pc.inverse_mass);
+        ++contacts;
+
+        if (friction > real_t(0.0)) {
+            const Vector3 node_move = pn.position - pn.previous_position;
+            const Vector3 surface_move = (pa.position - pa.previous_position) * u +
+                (pb.position - pb.previous_position) * v +
+                (pc.position - pc.previous_position) * w;
+            const Vector3 relative = node_move - surface_move;
+            const Vector3 tangent = relative - normal * relative.dot(normal);
+            const real_t tangent_length = tangent.length();
+
+            if (tangent_length > real_t(1.0e-9)) {
+                const real_t slide = std::min(tangent_length, friction * depth) / denominator;
+                const Vector3 direction = tangent / tangent_length;
+
+                pn.position -= direction * (slide * pn.inverse_mass);
+                pa.position += direction * (slide * u * pa.inverse_mass);
+                pb.position += direction * (slide * v * pb.inverse_mass);
+                pc.position += direction * (slide * w * pc.inverse_mass);
+            }
+        }
+    }
+
+    self_contact_count = contacts;
+    (void)h;
+}
+
 void SoftBodySolver3D::integrate(real_t h) {
     const real_t max_speed_sq = max_speed * max_speed;
     const Vector3 gravity_dv = gravity * h;
@@ -1739,15 +2631,59 @@ void SoftBodySolver3D::simulate_tick() {
     tick_max_strain = 0.0;
     tick_peak_speed_sq = 0.0;
     tick_wall_impulse = Vector3();
+    tick_contact_impulse = Vector3();
+    tick_contact_depth = 0.0;
+    for (Collider &collider : colliders) {
+        collider.tick_impulse = Vector3();
+    }
     plastic_allowed = plastic_hold <= real_t(0.0) || crash_active || plastic_timer > real_t(0.0);
 
     if (good_position.size() != particles.size()) {
         good_position.resize(particles.size());
         good_velocity.resize(particles.size());
     }
+    real_t start_speed_sq = 0.0;
+    bool has_static_node = false;
+    Vector3 mean_velocity;
+    int32_t movable_count = 0;
     for (size_t i = 0; i < particles.size(); ++i) {
         good_position[i] = particles[i].position;
         good_velocity[i] = particles[i].velocity;
+
+        if (particles[i].inverse_mass > real_t(0.0)) {
+            start_speed_sq = std::max(start_speed_sq, particles[i].velocity.length_squared());
+            mean_velocity += particles[i].velocity;
+            ++movable_count;
+        } else if (!particles[i].detached) {
+            has_static_node = true;
+        }
+    }
+
+    const bool self_active = self_collision && particles.size() > 1;
+
+    if (self_active) {
+        real_t speed_sq = start_speed_sq;
+
+        if (!has_static_node && movable_count > 0) {
+            mean_velocity /= real_t(movable_count);
+            speed_sq = 0.0;
+
+            for (const Particle &particle : particles) {
+                if (particle.inverse_mass > real_t(0.0)) {
+                    speed_sq = std::max(speed_sq, (particle.velocity - mean_velocity).length_squared());
+                }
+            }
+        }
+
+        const real_t travel = std::min(
+            (std::sqrt(speed_sq) * real_t(1.25) + real_t(1.0)) * fixed_step + real_t(0.04), real_t(0.5)
+        );
+        const bool calm = speed_sq < real_t(0.25) && self_contact_count == 0;
+
+        if (!calm || ++self_idle_ticks >= 4) {
+            self_idle_ticks = 0;
+            build_self_contacts(travel);
+        }
     }
 
     for (int32_t step = 0; step < steps; ++step) {
@@ -1759,6 +2695,14 @@ void SoftBodySolver3D::simulate_tick() {
 
         if (wall_enabled) {
             solve_wall(h);
+        }
+
+        if (!colliders.empty()) {
+            solve_colliders(h);
+        }
+
+        if (self_active) {
+            solve_self_collision(h);
         }
 
         real_t mass_sum = 0.0;
@@ -1829,6 +2773,8 @@ void SoftBodySolver3D::simulate_tick() {
         tick_max_strain = 0.0;
         tick_peak_speed_sq = 0.0;
         tick_wall_impulse = Vector3();
+        tick_contact_impulse = Vector3();
+        tick_contact_depth = 0.0;
     }
 
     if (finite) {
@@ -1849,7 +2795,7 @@ void SoftBodySolver3D::simulate_tick() {
 
     process_detachments();
 
-    if (tick_peak_speed_sq > real_t(0.25)) {
+    if (tick_peak_speed_sq > real_t(0.25) || tick_contact_depth > contact_margin + real_t(0.01)) {
         plastic_timer = plastic_hold;
     } else if (plastic_timer > real_t(0.0)) {
         plastic_timer = std::max(real_t(0.0), plastic_timer - fixed_step);
@@ -1861,11 +2807,15 @@ void SoftBodySolver3D::simulate_tick() {
     wall_impulse_total += tick_wall_impulse;
     wall_peak_force = std::max(wall_peak_force, wall_force.length());
 
+    contact_force = tick_contact_impulse / fixed_step;
+    contact_peak_force = std::max(contact_peak_force, contact_force.length());
+    age_colliders();
+
     diagnostics_dirty = true;
 
     if (crash_active) {
         update_crash();
-    } else if (lock_momentum && !wall_enabled) {
+    } else if (lock_momentum && !wall_enabled && colliders.empty()) {
         remove_mean_velocity();
     }
 
@@ -2185,6 +3135,13 @@ Dictionary SoftBodySolver3D::get_stats() const {
     stats[String("elastic_energy")] = diagnostics.elastic_energy;
     stats[String("kinetic_energy")] = diagnostics.kinetic_energy;
     stats[String("max_deformation")] = diagnostics.max_deformation;
+    stats[String("colliders")] = static_cast<int32_t>(colliders.size());
+    stats[String("contact_count")] = contact_count;
+    stats[String("contact_force")] = contact_force;
+    stats[String("self_contacts")] = self_contact_count;
+    stats[String("self_pairs")] = static_cast<int32_t>(node_pairs.size() + triangle_pairs.size());
+    stats[String("skin_triangles")] = static_cast<int32_t>(skin.size());
+    stats[String("self_overflow")] = self_overflow;
     return stats;
 }
 
@@ -2572,4 +3529,297 @@ bool SoftBodySolver3D::is_part_detached(int32_t p_part) const {
 
 int32_t SoftBodySolver3D::get_detached_part_count() const {
     return detached_part_count;
+}
+
+int32_t SoftBodySolver3D::add_plane_collider(
+    const Vector3 &p_point,
+    const Vector3 &p_normal,
+    real_t p_extent,
+    real_t p_friction,
+    real_t p_life
+) {
+    if (p_normal.length_squared() <= real_t(1.0e-8)) {
+        return -1;
+    }
+
+    Collider collider;
+    collider.type = COLLIDER_PLANE;
+    collider.position = p_point;
+    collider.local_normal = p_normal.normalized();
+    collider.radius = std::max(p_extent, real_t(0.0));
+    collider.friction = p_friction;
+    collider.life = p_life;
+    return push_collider(collider);
+}
+
+int32_t SoftBodySolver3D::add_sphere_collider(
+    const Vector3 &p_center,
+    real_t p_radius,
+    real_t p_friction,
+    real_t p_life
+) {
+    Collider collider;
+    collider.type = COLLIDER_SPHERE;
+    collider.position = p_center;
+    collider.radius = std::max(p_radius, real_t(0.001));
+    collider.friction = p_friction;
+    collider.life = p_life;
+    return push_collider(collider);
+}
+
+int32_t SoftBodySolver3D::add_capsule_collider(
+    const Vector3 &p_from,
+    const Vector3 &p_to,
+    real_t p_radius,
+    real_t p_friction,
+    real_t p_life
+) {
+    Collider collider;
+    collider.type = COLLIDER_CAPSULE;
+    collider.position = p_from;
+    collider.local_segment = p_to - p_from;
+    collider.radius = std::max(p_radius, real_t(0.001));
+    collider.friction = p_friction;
+    collider.life = p_life;
+    return push_collider(collider);
+}
+
+int32_t SoftBodySolver3D::add_box_collider(
+    const Vector3 &p_center,
+    const Basis &p_orientation,
+    const Vector3 &p_half_extents,
+    real_t p_friction,
+    real_t p_life
+) {
+    Collider collider;
+    collider.type = COLLIDER_BOX;
+    collider.position = p_center;
+    collider.basis = p_orientation.orthonormalized();
+    collider.extents = Vector3(
+        std::max(p_half_extents.x, real_t(0.001)),
+        std::max(p_half_extents.y, real_t(0.001)),
+        std::max(p_half_extents.z, real_t(0.001))
+    );
+    collider.friction = p_friction;
+    collider.life = p_life;
+    return push_collider(collider);
+}
+
+void SoftBodySolver3D::update_collider(
+    int32_t p_id,
+    const Vector3 &p_position,
+    const Basis &p_orientation,
+    const Vector3 &p_velocity
+) {
+    Collider *collider = find_collider(p_id);
+
+    if (collider == nullptr) {
+        return;
+    }
+
+    collider->position = p_position;
+    collider->basis = p_orientation.orthonormalized();
+    collider->velocity = p_velocity;
+
+    if (sleeping && collider_touches_body(*collider)) {
+        wake();
+    }
+}
+
+void SoftBodySolver3D::remove_collider(int32_t p_id) {
+    colliders.erase(
+        std::remove_if(colliders.begin(), colliders.end(),
+            [p_id](const Collider &c) { return c.id == p_id; }),
+        colliders.end()
+    );
+
+    if (colliders.empty()) {
+        contact_count = 0;
+    }
+}
+
+void SoftBodySolver3D::clear_colliders() {
+    colliders.clear();
+    contact_count = 0;
+    contact_force = Vector3();
+    tick_contact_impulse = Vector3();
+}
+
+int32_t SoftBodySolver3D::get_collider_count() const {
+    return static_cast<int32_t>(colliders.size());
+}
+
+Vector3 SoftBodySolver3D::get_collider_force(int32_t p_id) const {
+    for (const Collider &collider : colliders) {
+        if (collider.id == p_id) {
+            return collider.impulse / fixed_step;
+        }
+    }
+
+    return Vector3();
+}
+
+int32_t SoftBodySolver3D::get_contact_count() const {
+    return contact_count;
+}
+
+Vector3 SoftBodySolver3D::get_contact_force() const {
+    return contact_force;
+}
+
+real_t SoftBodySolver3D::get_contact_peak_force() const {
+    return contact_peak_force;
+}
+
+int32_t SoftBodySolver3D::add_collision_triangle(int32_t p_a, int32_t p_b, int32_t p_c) {
+    const int32_t count = static_cast<int32_t>(particles.size());
+
+    if (p_a < 0 || p_b < 0 || p_c < 0 || p_a >= count || p_b >= count || p_c >= count ||
+        p_a == p_b || p_b == p_c || p_a == p_c) {
+        return -1;
+    }
+
+    if (static_cast<int32_t>(skin.size()) >= MAX_SKIN_TRIANGLES) {
+        return -1;
+    }
+
+    SkinTriangle triangle;
+    triangle.a = p_a;
+    triangle.b = p_b;
+    triangle.c = p_c;
+    skin.push_back(triangle);
+    triangle_mark.clear();
+    return static_cast<int32_t>(skin.size()) - 1;
+}
+
+void SoftBodySolver3D::set_collision_triangles(const PackedInt32Array &p_indices) {
+    skin.clear();
+    triangle_mark.clear();
+
+    const int64_t triples = p_indices.size() / 3;
+
+    for (int64_t i = 0; i < triples; ++i) {
+        add_collision_triangle(p_indices[i * 3], p_indices[i * 3 + 1], p_indices[i * 3 + 2]);
+    }
+}
+
+int32_t SoftBodySolver3D::build_skin_from_mesh(
+    const PackedVector3Array &p_vertices,
+    const PackedInt32Array &p_indices
+) {
+    if (particles.empty() || p_vertices.is_empty()) {
+        return 0;
+    }
+
+    const int64_t vertex_count = p_vertices.size();
+    std::vector<int32_t> nearest(static_cast<size_t>(vertex_count), 0);
+
+    for (int64_t v = 0; v < vertex_count; ++v) {
+        const Vector3 point = p_vertices[v];
+        real_t best = std::numeric_limits<real_t>::max();
+
+        for (size_t i = 0; i < particles.size(); ++i) {
+            const real_t distance = (particles[i].rest_position - point).length_squared();
+
+            if (distance < best) {
+                best = distance;
+                nearest[v] = static_cast<int32_t>(i);
+            }
+        }
+    }
+
+    std::vector<std::array<int32_t, 3>> unique;
+    const int64_t triples = p_indices.size() / 3;
+
+    for (int64_t t = 0; t < triples; ++t) {
+        const int64_t ia = p_indices[t * 3];
+        const int64_t ib = p_indices[t * 3 + 1];
+        const int64_t ic = p_indices[t * 3 + 2];
+
+        if (ia < 0 || ib < 0 || ic < 0 || ia >= vertex_count || ib >= vertex_count || ic >= vertex_count) {
+            continue;
+        }
+
+        std::array<int32_t, 3> key = {nearest[ia], nearest[ib], nearest[ic]};
+
+        if (key[0] == key[1] || key[1] == key[2] || key[0] == key[2]) {
+            continue;
+        }
+
+        std::sort(key.begin(), key.end());
+        unique.push_back(key);
+    }
+
+    std::sort(unique.begin(), unique.end());
+    unique.erase(std::unique(unique.begin(), unique.end()), unique.end());
+
+    int32_t added = 0;
+
+    for (const std::array<int32_t, 3> &key : unique) {
+        if (add_collision_triangle(key[0], key[1], key[2]) >= 0) {
+            ++added;
+        }
+    }
+
+    return added;
+}
+
+void SoftBodySolver3D::clear_collision_triangles() {
+    skin.clear();
+    triangle_mark.clear();
+    triangle_pairs.clear();
+}
+
+int32_t SoftBodySolver3D::get_collision_triangle_count() const {
+    return static_cast<int32_t>(skin.size());
+}
+
+int32_t SoftBodySolver3D::get_self_contact_count() const {
+    return self_contact_count;
+}
+
+void SoftBodySolver3D::set_self_collision(bool p_value) {
+    self_collision = p_value;
+
+    if (!p_value) {
+        node_pairs.clear();
+        triangle_pairs.clear();
+        self_contact_count = 0;
+    }
+}
+
+bool SoftBodySolver3D::get_self_collision() const {
+    return self_collision;
+}
+
+void SoftBodySolver3D::set_self_collision_radius(real_t p_value) {
+    self_collision_radius = std::max(p_value, real_t(0.0));
+}
+
+real_t SoftBodySolver3D::get_self_collision_radius() const {
+    return self_collision_radius;
+}
+
+void SoftBodySolver3D::set_self_collision_thickness(real_t p_value) {
+    self_collision_thickness = std::clamp(p_value, real_t(0.001), real_t(0.5));
+}
+
+real_t SoftBodySolver3D::get_self_collision_thickness() const {
+    return self_collision_thickness;
+}
+
+void SoftBodySolver3D::set_self_collision_friction(real_t p_value) {
+    self_collision_friction = std::clamp(p_value, real_t(0.0), real_t(2.0));
+}
+
+real_t SoftBodySolver3D::get_self_collision_friction() const {
+    return self_collision_friction;
+}
+
+void SoftBodySolver3D::set_contact_margin(real_t p_value) {
+    contact_margin = std::clamp(p_value, real_t(0.0), real_t(0.5));
+}
+
+real_t SoftBodySolver3D::get_contact_margin() const {
+    return contact_margin;
 }

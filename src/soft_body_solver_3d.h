@@ -84,12 +84,55 @@ private:
         int32_t yielded_beam_count = 0;
     };
 
+    enum ColliderType : uint8_t {
+        COLLIDER_PLANE,
+        COLLIDER_SPHERE,
+        COLLIDER_CAPSULE,
+        COLLIDER_BOX
+    };
+
+    struct Collider {
+        int32_t id = 0;
+        ColliderType type = COLLIDER_PLANE;
+        Vector3 position;
+        Basis basis;
+        Vector3 local_normal = Vector3(0.0, 1.0, 0.0);
+        Vector3 local_segment;
+        Vector3 extents;
+        real_t radius = 0.0;
+        Vector3 velocity;
+        real_t friction = real_t(0.3);
+        real_t life = 0.0;
+        Vector3 tick_impulse;
+        Vector3 impulse;
+    };
+
+    struct SkinTriangle {
+        int32_t a = 0;
+        int32_t b = 0;
+        int32_t c = 0;
+    };
+
+    struct SelfPair {
+        int32_t node = 0;
+        int32_t other = 0;
+    };
+
+    struct TriEntry {
+        int32_t triangle = 0;
+        int32_t next = -1;
+    };
+
     static constexpr int32_t MAX_NODES = 4096;
     static constexpr int32_t MAX_BEAMS = 16384;
     static constexpr int32_t MAX_TICKS_PER_FRAME = 4;
     static constexpr int32_t MIN_ACTIVE_SUBSTEPS = 2;
     static constexpr int32_t MAX_PARTS = 64;
     static constexpr int32_t MAX_BREAK_EVENTS = 64;
+    static constexpr int32_t MAX_COLLIDERS = 32;
+    static constexpr int32_t MAX_SKIN_TRIANGLES = 8192;
+    static constexpr int32_t MAX_SELF_PAIRS = 8192;
+    static constexpr int32_t SELF_HASH_SIZE = 4096;
 
     std::vector<Particle> particles;
     std::vector<Beam> beams;
@@ -168,6 +211,33 @@ private:
     Vector3 wall_impulse_total;
     real_t wall_peak_force = 0.0;
 
+    std::vector<Collider> colliders;
+    int32_t next_collider_id = 1;
+    real_t contact_margin = real_t(0.02);
+    int32_t contact_count = 0;
+    real_t tick_contact_depth = 0.0;
+    real_t contact_peak_force = 0.0;
+    Vector3 tick_contact_impulse;
+    Vector3 contact_force;
+
+    bool self_collision = false;
+    real_t self_collision_radius = 0.0;
+    real_t self_collision_thickness = real_t(0.03);
+    real_t self_collision_friction = real_t(0.2);
+    real_t auto_self_radius = 0.0;
+    std::vector<SkinTriangle> skin;
+    std::vector<SelfPair> node_pairs;
+    std::vector<SelfPair> triangle_pairs;
+    std::vector<int32_t> hash_node_head;
+    std::vector<int32_t> hash_node_next;
+    std::vector<int32_t> hash_triangle_head;
+    std::vector<TriEntry> hash_triangle_entries;
+    std::vector<int32_t> triangle_mark;
+    int32_t mark_counter = 0;
+    int32_t self_contact_count = 0;
+    int32_t self_overflow = 0;
+    int32_t self_idle_ticks = 0;
+
     mutable Diagnostics diagnostics;
     mutable bool diagnostics_dirty = true;
     mutable Quaternion frame_rotation;
@@ -179,6 +249,16 @@ private:
     void update_beams(real_t h);
     void update_crash();
     void remove_mean_velocity();
+
+    bool collide_point(const Collider &collider, const Vector3 &point, Vector3 &normal, real_t &depth) const;
+    Collider *find_collider(int32_t id);
+    int32_t push_collider(Collider collider);
+    void solve_colliders(real_t h);
+    void age_colliders();
+    bool collider_touches_body(const Collider &collider) const;
+    real_t self_radius();
+    void build_self_contacts(real_t travel);
+    void solve_self_collision(real_t h);
 
     void rebuild_parts();
     void register_break(int32_t beam_index);
@@ -230,6 +310,60 @@ public:
         real_t plastic_scale
     );
     void finish_build();
+
+    int32_t add_plane_collider(
+        const Vector3 &point,
+        const Vector3 &normal,
+        real_t extent,
+        real_t friction,
+        real_t life
+    );
+    int32_t add_sphere_collider(const Vector3 &center, real_t radius, real_t friction, real_t life);
+    int32_t add_capsule_collider(
+        const Vector3 &from,
+        const Vector3 &to,
+        real_t radius,
+        real_t friction,
+        real_t life
+    );
+    int32_t add_box_collider(
+        const Vector3 &center,
+        const Basis &orientation,
+        const Vector3 &half_extents,
+        real_t friction,
+        real_t life
+    );
+    void update_collider(
+        int32_t id,
+        const Vector3 &position,
+        const Basis &orientation,
+        const Vector3 &velocity
+    );
+    void remove_collider(int32_t id);
+    void clear_colliders();
+    int32_t get_collider_count() const;
+    Vector3 get_collider_force(int32_t id) const;
+    int32_t get_contact_count() const;
+    Vector3 get_contact_force() const;
+    real_t get_contact_peak_force() const;
+
+    int32_t add_collision_triangle(int32_t a, int32_t b, int32_t c);
+    void set_collision_triangles(const PackedInt32Array &indices);
+    int32_t build_skin_from_mesh(const PackedVector3Array &vertices, const PackedInt32Array &indices);
+    void clear_collision_triangles();
+    int32_t get_collision_triangle_count() const;
+    int32_t get_self_contact_count() const;
+
+    void set_self_collision(bool value);
+    bool get_self_collision() const;
+    void set_self_collision_radius(real_t value);
+    real_t get_self_collision_radius() const;
+    void set_self_collision_thickness(real_t value);
+    real_t get_self_collision_thickness() const;
+    void set_self_collision_friction(real_t value);
+    real_t get_self_collision_friction() const;
+    void set_contact_margin(real_t value);
+    real_t get_contact_margin() const;
 
     void set_node_part(int32_t node_index, int32_t part);
     void set_nodes_part(const PackedInt32Array &node_indices, int32_t part);
