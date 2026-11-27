@@ -45,6 +45,7 @@ private:
         real_t plastic_scale = 1.0;
         uint8_t overload = 0;
         bool broken = false;
+        bool compression_only = false;
     };
 
     struct BreakEvent {
@@ -238,6 +239,15 @@ private:
     int32_t self_overflow = 0;
     int32_t self_idle_ticks = 0;
 
+    double energy_last = 0.0;
+    double energy_dissipated = 0.0;
+    double energy_injected = 0.0;
+    double absorbed_energy_tick = 0.0;
+    Vector3 tick_com;
+    Vector3 tick_net_torque;
+    Vector3 net_contact_force;
+    Vector3 net_contact_torque;
+
     mutable Diagnostics diagnostics;
     mutable bool diagnostics_dirty = true;
     mutable Quaternion frame_rotation;
@@ -249,6 +259,7 @@ private:
     void update_beams(real_t h);
     void update_crash();
     void remove_mean_velocity();
+    double elastic_energy() const;
 
     bool collide_point(const Collider &collider, const Vector3 &point, Vector3 &normal, real_t &depth) const;
     Collider *find_collider(int32_t id);
@@ -310,6 +321,19 @@ public:
         real_t plastic_scale
     );
     void finish_build();
+
+    int32_t add_support_beam(int32_t a, int32_t b, real_t stiffness_scale, real_t yield_scale);
+    void set_beam_compression_only(int32_t beam_index, bool value);
+    bool is_beam_compression_only(int32_t beam_index) const;
+
+    real_t get_absorbed_energy() const;
+    real_t get_injected_energy() const;
+    real_t get_remaining_energy() const;
+    real_t get_rebound_speed_limit() const;
+    real_t get_absorbed_energy_last_tick() const;
+    real_t get_absorbed_delta_v() const;
+    Vector3 get_net_contact_force() const;
+    Vector3 get_net_contact_torque() const;
 
     int32_t add_plane_collider(
         const Vector3 &point,

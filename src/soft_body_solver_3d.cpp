@@ -278,6 +278,29 @@ void SoftBodySolver3D::_bind_methods() {
     );
 
     ClassDB::bind_method(
+        D_METHOD("add_support_beam", "a", "b", "stiffness_scale", "yield_scale"),
+        &SoftBodySolver3D::add_support_beam,
+        DEFVAL(1.0), DEFVAL(1.0)
+    );
+    ClassDB::bind_method(
+        D_METHOD("set_beam_compression_only", "beam_index", "value"),
+        &SoftBodySolver3D::set_beam_compression_only
+    );
+    ClassDB::bind_method(
+        D_METHOD("is_beam_compression_only", "beam_index"),
+        &SoftBodySolver3D::is_beam_compression_only
+    );
+    ClassDB::bind_method(D_METHOD("get_absorbed_energy"), &SoftBodySolver3D::get_absorbed_energy);
+    ClassDB::bind_method(D_METHOD("get_injected_energy"), &SoftBodySolver3D::get_injected_energy);
+    ClassDB::bind_method(D_METHOD("get_remaining_energy"), &SoftBodySolver3D::get_remaining_energy);
+    ClassDB::bind_method(D_METHOD("get_rebound_speed_limit"), &SoftBodySolver3D::get_rebound_speed_limit);
+    ClassDB::bind_method(
+        D_METHOD("get_absorbed_energy_last_tick"), &SoftBodySolver3D::get_absorbed_energy_last_tick
+    );
+    ClassDB::bind_method(D_METHOD("get_absorbed_delta_v"), &SoftBodySolver3D::get_absorbed_delta_v);
+    ClassDB::bind_method(D_METHOD("get_net_contact_force"), &SoftBodySolver3D::get_net_contact_force);
+    ClassDB::bind_method(D_METHOD("get_net_contact_torque"), &SoftBodySolver3D::get_net_contact_torque);
+    ClassDB::bind_method(
         D_METHOD("add_plane_collider", "point", "normal", "extent", "friction", "life"),
         &SoftBodySolver3D::add_plane_collider,
         DEFVAL(0.0), DEFVAL(0.3), DEFVAL(0.1)
@@ -513,6 +536,12 @@ void SoftBodySolver3D::clear_data() {
     fault_count = 0;
     plastic_work = 0.0;
     damper_work = 0.0;
+    energy_last = 0.0;
+    energy_dissipated = 0.0;
+    energy_injected = 0.0;
+    absorbed_energy_tick = 0.0;
+    net_contact_force = Vector3();
+    net_contact_torque = Vector3();
     wall_contacts = 0;
     tick_wall_impulse = Vector3();
     wall_force = Vector3();
@@ -1127,7 +1156,10 @@ real_t SoftBodySolver3D::apply_impact(
     diagnostics_dirty = true;
     touch(max_delta_v_squared);
 
-    return std::max(real_t(0.0), total_kinetic_energy() - energy_before);
+    const real_t injected = std::max(real_t(0.0), total_kinetic_energy() - energy_before);
+    energy_last += double(injected);
+    energy_injected += double(injected);
+    return injected;
 }
 
 void SoftBodySolver3D::reset_to_rest() {
@@ -1168,6 +1200,12 @@ void SoftBodySolver3D::reset_to_rest() {
     fault_count = 0;
     plastic_work = 0.0;
     damper_work = 0.0;
+    energy_last = 0.0;
+    energy_dissipated = 0.0;
+    energy_injected = 0.0;
+    absorbed_energy_tick = 0.0;
+    net_contact_force = Vector3();
+    net_contact_torque = Vector3();
     accumulator = 0.0;
     max_strain = 0.0;
     tick_max_strain = 0.0;
@@ -1294,7 +1332,10 @@ real_t SoftBodySolver3D::apply_crash(
     sleep_counter = 0;
     wake();
 
-    return std::max(real_t(0.0), total_kinetic_energy() - energy_before);
+    const real_t injected = std::max(real_t(0.0), total_kinetic_energy() - energy_before);
+    energy_last += double(injected);
+    energy_injected += double(injected);
+    return injected;
 }
 
 bool SoftBodySolver3D::is_crashing() const {
@@ -1825,6 +1866,7 @@ void SoftBodySolver3D::solve_colliders(real_t h) {
             const Vector3 impulse = correction * (inv_h / particle.inverse_mass);
             collider.tick_impulse += impulse;
             tick_contact_impulse += impulse;
+            tick_net_torque += (particle.position - tick_com).cross(impulse);
         }
     }
 
@@ -2326,6 +2368,12 @@ void SoftBodySolver3D::solve_beams(real_t inv_h2, int32_t iteration, bool revers
         const real_t alpha = beam.compliance * inv_h2;
         const real_t w_sum = pa.inverse_mass + pb.inverse_mass;
         const real_t constraint = distance - beam.rest_length;
+
+        if (beam.compression_only && constraint >= real_t(0.0)) {
+            beam.lambda = real_t(0.0);
+            continue;
+        }
+
         const real_t lambda = iteration == 0 ? real_t(0.0) : beam.lambda;
 
         const real_t d_lambda = (-constraint - alpha * lambda) / (w_sum + alpha);
@@ -2377,7 +2425,9 @@ void SoftBodySolver3D::solve_wall(real_t h) {
         }
 
         particle.position += correction;
-        tick_wall_impulse += correction * (inv_h / particle.inverse_mass);
+        const Vector3 wall_push = correction * (inv_h / particle.inverse_mass);
+        tick_wall_impulse += wall_push;
+        tick_net_torque += (particle.position - tick_com).cross(wall_push);
     }
 
     wall_contacts = contacts;
@@ -2408,7 +2458,10 @@ void SoftBodySolver3D::update_beams(real_t h) {
         const Vector3 direction = delta / distance;
         const real_t w_sum = pa.inverse_mass + pb.inverse_mass;
 
-        if (w_sum > real_t(0.0) && beam_damping > real_t(0.0) && beam.damping_scale > real_t(0.0)) {
+        const bool slack_support = beam.compression_only && distance >= beam.rest_length;
+
+        if (w_sum > real_t(0.0) && beam_damping > real_t(0.0) && beam.damping_scale > real_t(0.0) &&
+            !slack_support) {
             const real_t factor =
                 std::min(beam_damping * beam.damping_scale * h, real_t(0.9));
             const real_t relative = (pb.velocity - pa.velocity).dot(direction);
@@ -2422,7 +2475,9 @@ void SoftBodySolver3D::update_beams(real_t h) {
         }
 
         const real_t strain = (distance - beam.rest_length) / beam.rest_length;
-        tick_max_strain = std::max(tick_max_strain, std::abs(strain));
+        if (!slack_support) {
+            tick_max_strain = std::max(tick_max_strain, std::abs(strain));
+        }
 
         const real_t deviation =
             std::abs(beam.rest_length / beam.initial_rest_length - real_t(1.0));
@@ -2438,7 +2493,7 @@ void SoftBodySolver3D::update_beams(real_t h) {
             real_t target = beam.rest_length;
             bool flow = false;
 
-            if (strain > tension_yield) {
+            if (strain > tension_yield && !beam.compression_only) {
                 target = distance / (real_t(1.0) + tension_yield);
                 flow = true;
             } else if (strain < -compression_yield) {
@@ -2465,7 +2520,7 @@ void SoftBodySolver3D::update_beams(real_t h) {
 
         const real_t break_limit = break_strain * beam.break_scale;
 
-        if (distance > beam.initial_rest_length * (real_t(1.0) + break_limit)) {
+        if (!beam.compression_only && distance > beam.initial_rest_length * (real_t(1.0) + break_limit)) {
             if (beam.overload < 255) {
                 ++beam.overload;
             }
@@ -2633,6 +2688,7 @@ void SoftBodySolver3D::simulate_tick() {
     tick_wall_impulse = Vector3();
     tick_contact_impulse = Vector3();
     tick_contact_depth = 0.0;
+    tick_net_torque = Vector3();
     for (Collider &collider : colliders) {
         collider.tick_impulse = Vector3();
     }
@@ -2646,6 +2702,8 @@ void SoftBodySolver3D::simulate_tick() {
     bool has_static_node = false;
     Vector3 mean_velocity;
     int32_t movable_count = 0;
+    Vector3 mass_center;
+    real_t mass_total = 0.0;
     for (size_t i = 0; i < particles.size(); ++i) {
         good_position[i] = particles[i].position;
         good_velocity[i] = particles[i].velocity;
@@ -2654,10 +2712,15 @@ void SoftBodySolver3D::simulate_tick() {
             start_speed_sq = std::max(start_speed_sq, particles[i].velocity.length_squared());
             mean_velocity += particles[i].velocity;
             ++movable_count;
+            const real_t node_mass = real_t(1.0) / particles[i].inverse_mass;
+            mass_center += particles[i].position * node_mass;
+            mass_total += node_mass;
         } else if (!particles[i].detached) {
             has_static_node = true;
         }
     }
+
+    tick_com = mass_total > real_t(0.0) ? mass_center / mass_total : Vector3();
 
     const bool self_active = self_collision && particles.size() > 1;
 
@@ -2808,6 +2871,14 @@ void SoftBodySolver3D::simulate_tick() {
     wall_peak_force = std::max(wall_peak_force, wall_force.length());
 
     contact_force = tick_contact_impulse / fixed_step;
+    net_contact_force = (tick_wall_impulse + tick_contact_impulse) / fixed_step;
+    net_contact_torque = tick_net_torque / fixed_step;
+    {
+        const double energy_now = double(total_kinetic_energy()) + elastic_energy();
+        absorbed_energy_tick = std::max(0.0, energy_last - energy_now);
+        energy_dissipated += absorbed_energy_tick;
+        energy_last = energy_now;
+    }
     contact_peak_force = std::max(contact_peak_force, contact_force.length());
     age_colliders();
 
@@ -3822,4 +3893,101 @@ void SoftBodySolver3D::set_contact_margin(real_t p_value) {
 
 real_t SoftBodySolver3D::get_contact_margin() const {
     return contact_margin;
+}
+
+int32_t SoftBodySolver3D::add_support_beam(
+    int32_t p_a,
+    int32_t p_b,
+    real_t p_stiffness_scale,
+    real_t p_yield_scale
+) {
+    const int32_t index = add_beam(p_a, p_b, p_stiffness_scale, p_yield_scale, real_t(1.0));
+
+    if (index >= 0) {
+        beams[index].compression_only = true;
+    }
+
+    return index;
+}
+
+void SoftBodySolver3D::set_beam_compression_only(int32_t p_beam_index, bool p_value) {
+    if (p_beam_index < 0 || p_beam_index >= static_cast<int32_t>(beams.size())) {
+        return;
+    }
+
+    beams[p_beam_index].compression_only = p_value;
+    beams[p_beam_index].lambda = real_t(0.0);
+}
+
+bool SoftBodySolver3D::is_beam_compression_only(int32_t p_beam_index) const {
+    if (p_beam_index < 0 || p_beam_index >= static_cast<int32_t>(beams.size())) {
+        return false;
+    }
+
+    return beams[p_beam_index].compression_only;
+}
+
+real_t SoftBodySolver3D::get_absorbed_energy() const {
+    return static_cast<real_t>(std::min(energy_dissipated, std::max(energy_injected, 0.0)));
+}
+
+real_t SoftBodySolver3D::get_injected_energy() const {
+    return static_cast<real_t>(energy_injected);
+}
+
+real_t SoftBodySolver3D::get_remaining_energy() const {
+    return static_cast<real_t>(std::max(energy_last, 0.0));
+}
+
+real_t SoftBodySolver3D::get_rebound_speed_limit() const {
+    const real_t mass = get_total_mass();
+
+    if (mass <= real_t(0.0)) {
+        return 0.0;
+    }
+
+    return std::sqrt(real_t(2.0) * get_remaining_energy() / mass);
+}
+
+double SoftBodySolver3D::elastic_energy() const {
+    double total = 0.0;
+
+    for (const Beam &beam : beams) {
+        if (beam.broken || beam.compliance <= real_t(0.0)) {
+            continue;
+        }
+
+        const Vector3 delta = particles[beam.b].position - particles[beam.a].position;
+        const double constraint = double(delta.length()) - double(beam.rest_length);
+
+        if (beam.compression_only && constraint >= 0.0) {
+            continue;
+        }
+
+        total += 0.5 * constraint * constraint / double(beam.compliance);
+    }
+
+    return total;
+}
+
+real_t SoftBodySolver3D::get_absorbed_energy_last_tick() const {
+    return static_cast<real_t>(absorbed_energy_tick);
+}
+
+real_t SoftBodySolver3D::get_absorbed_delta_v() const {
+    const real_t mass = get_total_mass();
+
+    if (mass <= real_t(0.0)) {
+        return 0.0;
+    }
+
+    return std::sqrt(real_t(2.0) * get_absorbed_energy() / mass);
+}
+
+Vector3 SoftBodySolver3D::get_net_contact_force() const {
+    return net_contact_force;
+}
+
+Vector3 SoftBodySolver3D::get_net_contact_torque() const {
+    return net_contact_torque;
 }
