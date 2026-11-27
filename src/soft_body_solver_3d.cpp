@@ -1584,6 +1584,9 @@ real_t SoftBodySolver3D::get_time_budget_us() const {
 namespace {
 
 constexpr int32_t kNoIndex = -1;
+constexpr real_t kMaxContactDepth = real_t(0.3);
+constexpr real_t kMaxDepenetration = real_t(0.015);
+constexpr real_t kMaxSelfDepth = real_t(0.1);
 
 Vector3 closest_on_triangle(
     const Vector3 &p,
@@ -1843,15 +1846,23 @@ void SoftBodySolver3D::solve_colliders(real_t h) {
                 continue;
             }
 
+            if (depth > kMaxContactDepth + contact_margin) {
+                continue;
+            }
+
             ++contacts;
             tick_contact_depth = std::max(tick_contact_depth, depth);
 
-            Vector3 correction = normal * depth;
+            const Vector3 motion =
+                (particle.position - particle.previous_position) - collider.velocity * h;
+            const real_t approach = std::max(real_t(0.0), -motion.dot(normal));
+            const real_t stopping = std::min(depth, approach);
+            const real_t overlap = std::min(depth - stopping, kMaxDepenetration);
+
+            Vector3 correction = normal * (stopping + overlap);
 
             if (collider.friction > real_t(0.0)) {
-                const Vector3 move =
-                    (particle.position - particle.previous_position) - collider.velocity * h;
-                const Vector3 tangent = move - normal * move.dot(normal);
+                const Vector3 tangent = motion - normal * motion.dot(normal);
                 const real_t tangent_length = tangent.length();
 
                 if (tangent_length > real_t(1.0e-9)) {
@@ -1862,8 +1873,9 @@ void SoftBodySolver3D::solve_colliders(real_t h) {
             }
 
             particle.position += correction;
+            particle.previous_position += normal * overlap;
 
-            const Vector3 impulse = correction * (inv_h / particle.inverse_mass);
+            const Vector3 impulse = (correction - normal * overlap) * (inv_h / particle.inverse_mass);
             collider.tick_impulse += impulse;
             tick_contact_impulse += impulse;
             tick_net_torque += (particle.position - tick_com).cross(impulse);
@@ -2193,11 +2205,20 @@ void SoftBodySolver3D::solve_self_collision(real_t h) {
 
         const real_t distance = std::sqrt(distance_squared);
         const Vector3 normal = delta / distance;
-        const real_t depth = min_distance - distance;
-        const real_t lambda = depth / w_sum;
+        const real_t depth = std::min(min_distance - distance, kMaxSelfDepth);
+        const real_t closing = std::max(
+            real_t(0.0),
+            ((pi.position - pi.previous_position) - (pj.position - pj.previous_position)).dot(normal)
+        );
+        const real_t stopping = std::min(depth, closing);
+        const real_t overlap = std::min(depth - stopping, kMaxDepenetration);
+        const real_t lambda = (stopping + overlap) / w_sum;
+        const real_t overlap_lambda = overlap / w_sum;
 
         pi.position -= normal * (lambda * pi.inverse_mass);
         pj.position += normal * (lambda * pj.inverse_mass);
+        pi.previous_position -= normal * (overlap_lambda * pi.inverse_mass);
+        pj.previous_position += normal * (overlap_lambda * pj.inverse_mass);
         ++contacts;
 
         if (friction > real_t(0.0)) {
@@ -2282,6 +2303,8 @@ void SoftBodySolver3D::solve_self_collision(real_t h) {
             continue;
         }
 
+        depth = std::min(depth, kMaxSelfDepth);
+
         const real_t denominator = pn.inverse_mass + u * u * pa.inverse_mass +
             v * v * pb.inverse_mass + w * w * pc.inverse_mass;
 
@@ -2289,12 +2312,23 @@ void SoftBodySolver3D::solve_self_collision(real_t h) {
             continue;
         }
 
-        const real_t lambda = depth / denominator;
+        const Vector3 approach_motion = (pn.position - pn.previous_position) -
+            ((pa.position - pa.previous_position) * u + (pb.position - pb.previous_position) * v +
+                (pc.position - pc.previous_position) * w);
+        const real_t closing = std::max(real_t(0.0), -approach_motion.dot(normal));
+        const real_t stopping = std::min(depth, closing);
+        const real_t overlap = std::min(depth - stopping, kMaxDepenetration);
+        const real_t lambda = (stopping + overlap) / denominator;
+        const real_t overlap_lambda = overlap / denominator;
 
         pn.position += normal * (lambda * pn.inverse_mass);
         pa.position -= normal * (lambda * u * pa.inverse_mass);
         pb.position -= normal * (lambda * v * pb.inverse_mass);
         pc.position -= normal * (lambda * w * pc.inverse_mass);
+        pn.previous_position += normal * (overlap_lambda * pn.inverse_mass);
+        pa.previous_position -= normal * (overlap_lambda * u * pa.inverse_mass);
+        pb.previous_position -= normal * (overlap_lambda * v * pb.inverse_mass);
+        pc.previous_position -= normal * (overlap_lambda * w * pc.inverse_mass);
         ++contacts;
 
         if (friction > real_t(0.0)) {
@@ -2886,7 +2920,7 @@ void SoftBodySolver3D::simulate_tick() {
 
     if (crash_active) {
         update_crash();
-    } else if (lock_momentum && !wall_enabled && colliders.empty()) {
+    } else if (lock_momentum && !wall_enabled) {
         remove_mean_velocity();
     }
 
