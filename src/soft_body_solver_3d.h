@@ -119,6 +119,11 @@ private:
         int32_t other = 0;
     };
 
+    struct SkinEdge {
+        int32_t a = 0;
+        int32_t b = 0;
+    };
+
     struct TriEntry {
         int32_t triangle = 0;
         int32_t next = -1;
@@ -238,6 +243,16 @@ private:
     int32_t self_contact_count = 0;
     int32_t self_overflow = 0;
     int32_t self_idle_ticks = 0;
+    bool self_collision_edges = true;
+    bool skin_edges_dirty = true;
+    std::vector<SkinEdge> skin_edges;
+    std::vector<SelfPair> edge_pairs;
+    std::vector<int32_t> hash_edge_head;
+    std::vector<TriEntry> hash_edge_entries;
+    std::vector<int32_t> edge_mark;
+    std::vector<Vector3> edge_low;
+    std::vector<Vector3> edge_high;
+    int32_t edge_mark_counter = 0;
 
     double energy_last = 0.0;
     double energy_dissipated = 0.0;
@@ -269,6 +284,7 @@ private:
     bool collider_touches_body(const Collider &collider) const;
     real_t self_radius();
     void build_self_contacts(real_t travel);
+    void rebuild_skin_edges();
     void solve_self_collision(real_t h);
 
     void rebuild_parts();
@@ -321,6 +337,9 @@ public:
         real_t plastic_scale
     );
     void finish_build();
+
+    Dictionary get_damage_state() const;
+    bool set_damage_state(const Dictionary &state);
 
     int32_t add_support_beam(int32_t a, int32_t b, real_t stiffness_scale, real_t yield_scale);
     void set_beam_compression_only(int32_t beam_index, bool value);
@@ -386,6 +405,9 @@ public:
     real_t get_self_collision_thickness() const;
     void set_self_collision_friction(real_t value);
     real_t get_self_collision_friction() const;
+    void set_self_collision_edges(bool value);
+    bool get_self_collision_edges() const;
+    int32_t get_skin_edge_count() const;
     void set_contact_margin(real_t value);
     real_t get_contact_margin() const;
 
